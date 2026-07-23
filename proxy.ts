@@ -13,6 +13,15 @@ export async function proxy(request: NextRequest) {
   const session = await readMainAppSessionCookie(request.cookies.get(getMainAppSessionCookieName())?.value);
   if (session && await validateMainAppSession(session)) return NextResponse.next();
 
+  if (request.nextUrl.pathname.startsWith('/api/')) {
+    const response = NextResponse.json(
+      { error: 'Main-site session is invalid.' },
+      { status: 401 },
+    );
+    response.cookies.set(getMainAppSessionCookieName(), '', { ...getMainAppSessionCookieOptions(), maxAge: 0 });
+    return response;
+  }
+
   const response = NextResponse.redirect(getMainAppSsoLaunchUrl());
   response.cookies.set(getMainAppSessionCookieName(), '', { ...getMainAppSessionCookieOptions(), maxAge: 0 });
   return response;
