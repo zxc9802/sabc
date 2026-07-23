@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createMainAppSessionCookie,
+  getPublicSabcAppUrl,
   readMainAppSessionCookie,
   safeRedirectPath,
 } from './main-app-sso';
@@ -27,6 +28,10 @@ describe('main application SSO', () => {
     await expect(readMainAppSessionCookie('invalid')).resolves.toBeNull();
     expect(safeRedirectPath('/report?projectId=p1')).toBe('/report?projectId=p1');
     expect(safeRedirectPath('//outside.example')).toBe('/');
+  });
+
+  it('uses the public SABC origin for the post-SSO redirect', () => {
+    expect(getPublicSabcAppUrl()).toBe('https://sabc.qycm.top');
   });
 
   it('keeps the ticket exchange server-side and validates every protected request', async () => {
