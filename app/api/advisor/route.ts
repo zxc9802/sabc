@@ -7,6 +7,7 @@ import {
   type DeepSeekClient,
   ProviderError,
 } from "@/lib/ai/deepseek-client";
+import { chatAttachmentsSchema } from "@/lib/attachments/attachment-schema";
 import {
   buildAdvisorData,
   buildAdvisorSystemPrompt,
@@ -76,6 +77,7 @@ const requestSchema = z
     mode: z.enum(["opening", "reply"]),
     context: contextSchema,
     messages: z.array(messageSchema).max(100),
+    attachments: chatAttachmentsSchema.optional(),
   })
   .superRefine((value, context) => {
     if (value.mode === "opening" && value.messages.length !== 0) {
@@ -164,6 +166,7 @@ async function streamAdvisor(
     for await (const delta of client.stream({
       systemPrompt: buildAdvisorSystemPrompt(input.mode),
       userPrompt: buildAdvisorData(input),
+      attachments: input.attachments,
       signal,
     })) {
       content += delta;

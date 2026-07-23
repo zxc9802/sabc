@@ -3,7 +3,9 @@
 import type { FormEvent, UIEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 
+import { AttachmentPicker } from "@/components/chat/attachment-picker";
 import { ChatMessageContent } from "@/components/chat/chat-message-content";
+import type { ChatAttachment } from "@/lib/attachments/attachment-types";
 import type { InterviewDepth } from "@/lib/domain/types";
 import type { MessageRecord, ProjectRecord } from "@/lib/storage/db";
 import type {
@@ -18,8 +20,12 @@ interface ConversationPanelProps {
   phase: WorkspacePhase;
   description: string;
   answer: string;
+  attachments: ChatAttachment[];
+  attachmentError: string | null;
   onDescriptionChange: (value: string) => void;
   onAnswerChange: (value: string) => void;
+  onFilesSelected: (files: File[]) => void;
+  onAttachmentRemove: (id: string) => void;
   onCreate: () => void;
   onAnswer: () => void;
   onStop: () => void;
@@ -34,8 +40,12 @@ export function ConversationPanel({
   phase,
   description,
   answer,
+  attachments,
+  attachmentError,
   onDescriptionChange,
   onAnswerChange,
+  onFilesSelected,
+  onAttachmentRemove,
   onCreate,
   onAnswer,
   onStop,
@@ -107,6 +117,13 @@ export function ConversationPanel({
             value={description}
             disabled={busy}
             onChange={(event) => onDescriptionChange(event.target.value)}
+          />
+          <AttachmentPicker
+            attachments={attachments}
+            busy={busy}
+            error={attachmentError}
+            onFilesSelected={onFilesSelected}
+            onRemove={onAttachmentRemove}
           />
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
             <p className="font-mono text-xs text-muted">

@@ -1,4 +1,5 @@
 import { isAdvisoryMessage } from "@/lib/conversation/message-stage";
+import type { ChatAttachment } from "@/lib/attachments/attachment-types";
 import type { MessageRecord } from "@/lib/storage/db";
 import {
   ChatStreamProtocolError,
@@ -29,6 +30,7 @@ export async function requestAdvisorMessage(input: {
   mode: AdvisorMode;
   context: AdvisorContext;
   messages: MessageRecord[];
+  attachments?: ChatAttachment[];
   signal: AbortSignal;
   onDelta: (draft: string) => void;
 }): Promise<AdvisorStreamResult> {
@@ -44,6 +46,7 @@ export async function requestAdvisorMessage(input: {
         messages: input.messages.filter(isAdvisoryMessage).map(
           ({ id, role, content }) => ({ id, role, content }),
         ),
+        attachments: input.attachments,
       }),
       signal: input.signal,
     });

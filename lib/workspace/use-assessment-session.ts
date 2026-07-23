@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
 import type { AnalyzeProjectResponse } from "@/lib/domain/api-types";
+import { appendAttachmentSummary } from "@/lib/attachments/attachment-summary";
+import type { ChatAttachment } from "@/lib/attachments/attachment-types";
 import type { InterviewDepth } from "@/lib/domain/types";
 import { isInterviewMessage } from "@/lib/conversation/message-stage";
 import type {
@@ -15,10 +17,7 @@ import {
   readChatStream,
   type ChatStreamEvent,
 } from "@/lib/streaming/chat-stream";
-import {
-  readFinalizeStream,
-  type FinalizeStreamEvent,
-} from "@/lib/streaming/finalize-stream";
+import { readFinalizeJob } from "@/lib/streaming/finalize-job";
 
 import {
   createInitialWorkspaceState,
@@ -36,6 +35,7 @@ interface ChatSubmission {
   project: ProjectRecord;
   messages: MessageRecord[];
   round: number;
+  attachments?: ChatAttachment[];
 }
 
 type ResearchMode = "auto" | "interview_only";
@@ -169,6 +169,7 @@ export function useAssessmentSession({
               ),
               interviewDepth: submission.project.interviewDepth ?? "medium",
               round: submission.round,
+              attachments: submission.attachments,
             }),
             signal: controller.signal,
           });
@@ -297,7 +298,10 @@ export function useAssessmentSession({
   );
 
   const createAndAnalyze = useCallback(
-    async (description: string): Promise<boolean> => {
+    async (
+      description: string,
+      attachments: ChatAttachment[] = [],
+    ): Promise<boolean> => {
       cancelActiveRequest();
       dispatch({ type: "LOAD_STARTED" });
       try {
@@ -306,7 +310,7 @@ export function useAssessmentSession({
           id: crypto.randomUUID(),
           projectId: project.id,
           role: "user",
-          content: description,
+          content: appendAttachmentSummary(description, attachments),
           round: 0,
           createdAt: new Date().toISOString(),
           stage: "interview",
@@ -323,7 +327,12 @@ export function useAssessmentSession({
             report: null,
           },
         });
-        return await runChat({ project, messages: [message], round: 0 });
+        return await runChat({
+          project,
+          messages: [message],
+          round: 0,
+          attachments,
+        });
       } catch {
         dispatch({
           type: "LOAD_FAILED",
@@ -336,7 +345,10 @@ export function useAssessmentSession({
   );
 
   const answerQuestion = useCallback(
-    async (answerText: string): Promise<boolean> => {
+    async (
+      answerText: string,
+      attachments: ChatAttachment[] = [],
+    ): Promise<boolean> => {
       const current = stateRef.current;
       if (!current.project || isBusy(current.phase)) return false;
       const project = current.project;
@@ -347,7 +359,7 @@ export function useAssessmentSession({
         id: crypto.randomUUID(),
         projectId: project.id,
         role: "user",
-        content: answerText,
+        content: appendAttachmentSummary(answerText, attachments),
         round,
         createdAt: new Date().toISOString(),
         stage: "interview",
@@ -367,6 +379,7 @@ export function useAssessmentSession({
         project,
         messages: [...interviewMessages, message],
         round,
+        attachments,
       });
     },
     [repository, runChat],
@@ -391,7 +404,7 @@ export function useAssessmentSession({
       try {
         let response: Response;
         try {
-          response = await fetcher("/api/finalize", {
+          response = await fetcher("/api/finalize-jobs", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -432,77 +445,113 @@ export function useAssessmentSession({
           );
         }
 
-        await readFinalizeStream(
-          response,
-          async (event: FinalizeStreamEvent) => {
-            if (!isCurrentRequest()) return;
-            switch (event.type) {
-              case "status":
-                dispatch({
-                  type: "FINALIZE_STATUS",
-                  requestId,
-                  stage: event.stage,
-                });
-                return;
-              case "research_plan":
-                dispatch({
-                  type: "RESEARCH_PLANNED",
-                  requestId,
-                  queries: event.queries,
-                });
-                return;
-              case "research_complete":
-                dispatch({
-                  type: "RESEARCH_RECEIVED",
-                  requestId,
-                  snapshot: event.snapshot,
-                });
-                try {
-                  await repository.saveResearchSnapshot(event.snapshot);
-                } catch {
-                  throw new SessionRequestError({
-                    code: "storage_failed",
-                    message: "调研结果未能保存到本地，请重试结束访谈。",
-                    retryable: true,
-                    action: "retry_finalize",
-                  });
-                }
-                return;
-              case "assessment": {
-                if (assessment) return;
-                const value: AnalyzeProjectResponse = event.result;
-                assessment = {
-                  id: crypto.randomUUID(),
-                  projectId: project.id,
-                  promptVersion: value.promptVersion,
-                  sources: value.sources,
-                  researchStatus: value.researchStatus,
-                  analysis: value.analysis,
-                  scored: value.scored,
-                  nextQuestion: null,
-                  diff: value.diff,
-                  createdAt: new Date().toISOString(),
-                };
-                dispatch({
-                  type: "ASSESSMENT_RECEIVED",
-                  requestId,
-                  assessment,
-                });
-                return;
-              }
-              case "complete":
-                completed = true;
-                return;
-              case "error":
-                throw new SessionRequestError({
-                  code: event.code,
-                  message: event.message,
-                  retryable: event.retryable,
-                  action: event.retryable ? "retry_finalize" : undefined,
-                });
+        const creation = (await response.json()) as unknown;
+        if (
+          !isRecord(creation) ||
+          typeof creation.jobId !== "string" ||
+          creation.jobId.length === 0
+        ) {
+          throw new SessionRequestError({
+            code: "invalid_response",
+            message: "最终分析任务创建失败，请重试。",
+            retryable: true,
+            action: "retry_finalize",
+          });
+        }
+
+        let savedResearchSnapshotId: string | null = null;
+        while (isCurrentRequest()) {
+          let pollResponse: Response;
+          try {
+            pollResponse = await fetcher(
+              `/api/finalize-jobs/${encodeURIComponent(creation.jobId)}`,
+              { signal: controller.signal },
+            );
+          } catch (error) {
+            if (isAbortError(error)) throw error;
+            await waitForPoll(controller.signal);
+            continue;
+          }
+
+          if (!pollResponse.ok) {
+            throw new SessionRequestError(
+              await readApiError(
+                pollResponse,
+                "retry_finalize",
+                "最终分析任务查询失败，请重试。",
+              ),
+            );
+          }
+
+          const job = await readFinalizeJob(pollResponse);
+          if (job.stage) {
+            dispatch({
+              type: "FINALIZE_STATUS",
+              requestId,
+              stage: job.stage,
+            });
+          }
+          if (job.researchQueries) {
+            dispatch({
+              type: "RESEARCH_PLANNED",
+              requestId,
+              queries: job.researchQueries,
+            });
+          }
+          if (
+            job.researchSnapshot &&
+            savedResearchSnapshotId !== job.researchSnapshot.id
+          ) {
+            dispatch({
+              type: "RESEARCH_RECEIVED",
+              requestId,
+              snapshot: job.researchSnapshot,
+            });
+            try {
+              await repository.saveResearchSnapshot(job.researchSnapshot);
+              savedResearchSnapshotId = job.researchSnapshot.id;
+            } catch {
+              throw new SessionRequestError({
+                code: "storage_failed",
+                message: "调研结果未能保存到本地，请重试结束访谈。",
+                retryable: true,
+                action: "retry_finalize",
+              });
             }
-          },
-        );
+          }
+
+          if (job.state === "failed") {
+            throw new SessionRequestError({
+              code: job.error.code,
+              message: job.error.message,
+              retryable: job.error.retryable,
+              action: job.error.retryable ? "retry_finalize" : undefined,
+            });
+          }
+          if (job.state === "completed") {
+            const value: AnalyzeProjectResponse = job.assessment;
+            assessment = {
+              id: crypto.randomUUID(),
+              projectId: project.id,
+              promptVersion: value.promptVersion,
+              sources: value.sources,
+              researchStatus: value.researchStatus,
+              analysis: value.analysis,
+              scored: value.scored,
+              nextQuestion: null,
+              diff: value.diff,
+              createdAt: new Date().toISOString(),
+            };
+            dispatch({
+              type: "ASSESSMENT_RECEIVED",
+              requestId,
+              assessment,
+            });
+            completed = true;
+            break;
+          }
+          await waitForPoll(controller.signal);
+        }
 
         if (!isCurrentRequest()) return false;
         if (!completed) {
@@ -685,6 +734,27 @@ function isAbortError(error: unknown): boolean {
     (error instanceof DOMException && error.name === "AbortError") ||
     (error instanceof Error && error.name === "AbortError")
   );
+}
+
+function waitForPoll(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(new DOMException("aborted", "AbortError"));
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, 2_000);
+    const onAbort = () => {
+      clearTimeout(timeout);
+      reject(new DOMException("aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
 }
 
 async function readApiError(

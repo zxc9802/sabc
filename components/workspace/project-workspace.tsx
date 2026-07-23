@@ -7,6 +7,8 @@ import { ComparisonView } from "@/components/compare/comparison-view";
 import { ProjectPicker } from "@/components/compare/project-picker";
 import { ErrorBanner } from "@/components/shared/error-banner";
 import { StageRail } from "@/components/workflow/stage-rail";
+import type { ChatAttachment } from "@/lib/attachments/attachment-types";
+import { readChatAttachments } from "@/lib/attachments/read-chat-attachments";
 import { isInterviewMessage } from "@/lib/conversation/message-stage";
 import type { FinalAssessmentRecord } from "@/lib/storage/db";
 import { createProjectRepository, type ProjectRepository } from "@/lib/storage/project-repository";
@@ -37,6 +39,8 @@ export function ProjectWorkspace({
   const [comparisonRecords, setComparisonRecords] = useState<FinalAssessmentRecord[] | null>(null);
   const [selectedComparisonIds, setSelectedComparisonIds] = useState<string[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const initialProjectLoadedRef = useRef(false);
   const loadProject = session.loadProject;
 
@@ -56,13 +60,32 @@ export function ProjectWorkspace({
   async function createProject(): Promise<void> {
     const input = description.trim();
     if (!input) return;
-    await session.createAndAnalyze(input);
+    if (await session.createAndAnalyze(input, attachments)) {
+      setAttachments([]);
+      setAttachmentError(null);
+    }
   }
 
   async function answerQuestion(): Promise<void> {
     const input = answer.trim();
     if (!input) return;
-    if (await session.answerQuestion(input)) setAnswer("");
+    if (await session.answerQuestion(input, attachments)) {
+      setAnswer("");
+      setAttachments([]);
+      setAttachmentError(null);
+    }
+  }
+
+  async function addAttachments(files: File[]): Promise<void> {
+    setAttachmentError(null);
+    try {
+      const next = await readChatAttachments(files, fetcher ?? fetch);
+      setAttachments((current) => [...current, ...next].slice(0, 6));
+    } catch (error) {
+      setAttachmentError(
+        error instanceof Error ? error.message : "文件读取失败，请重试。",
+      );
+    }
   }
 
   async function retryAnalysis(): Promise<void> {
@@ -99,6 +122,8 @@ export function ProjectWorkspace({
     setAnswer("");
     setComparisonRecords(null);
     setHistoryOpen(false);
+    setAttachments([]);
+    setAttachmentError(null);
   }
 
   return (
@@ -202,8 +227,16 @@ export function ProjectWorkspace({
               phase={state.phase}
               description={description}
               answer={answer}
+              attachments={attachments}
+              attachmentError={attachmentError}
               onDescriptionChange={setDescription}
               onAnswerChange={setAnswer}
+              onFilesSelected={(files) => void addAttachments(files)}
+              onAttachmentRemove={(id) =>
+                setAttachments((current) =>
+                  current.filter((attachment) => attachment.id !== id),
+                )
+              }
               onCreate={() => void createProject()}
               onAnswer={() => void answerQuestion()}
               onStop={() => session.stopGeneration()}

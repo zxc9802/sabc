@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 
 import { ProjectList } from "@/components/workspace/project-list";
 import { StageRail } from "@/components/workflow/stage-rail";
+import type { ChatAttachment } from "@/lib/attachments/attachment-types";
+import { readChatAttachments } from "@/lib/attachments/read-chat-attachments";
 import type { ProjectRecord } from "@/lib/storage/db";
 import {
   createProjectRepository,
@@ -40,6 +42,8 @@ export function AdvisorScreen({
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [answer, setAnswer] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -60,7 +64,23 @@ export function AdvisorScreen({
   async function send(): Promise<void> {
     const content = answer.trim();
     if (!content) return;
-    if (await session.send(content)) setAnswer("");
+    if (await session.send(content, attachments)) {
+      setAnswer("");
+      setAttachments([]);
+      setAttachmentError(null);
+    }
+  }
+
+  async function addAttachments(files: File[]): Promise<void> {
+    setAttachmentError(null);
+    try {
+      const next = await readChatAttachments(files, fetcher ?? fetch);
+      setAttachments((current) => [...current, ...next].slice(0, 6));
+    } catch (error) {
+      setAttachmentError(
+        error instanceof Error ? error.message : "文件读取失败，请重试。",
+      );
+    }
   }
 
   async function generateReport(): Promise<void> {
@@ -166,7 +186,15 @@ export function AdvisorScreen({
             reportPhase={reportGeneration.phase}
             reportError={reportGeneration.error}
             answer={answer}
+            attachments={attachments}
+            attachmentError={attachmentError}
             onAnswerChange={setAnswer}
+            onFilesSelected={(files) => void addAttachments(files)}
+            onAttachmentRemove={(id) =>
+              setAttachments((current) =>
+                current.filter((attachment) => attachment.id !== id),
+              )
+            }
             onSend={() => void send()}
             onRetry={() => void session.retry()}
             onStop={() => session.stop()}

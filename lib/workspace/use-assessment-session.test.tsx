@@ -6,7 +6,6 @@ import type { ResearchSnapshotRecord } from "@/lib/research/research-types";
 import type { MessageRecord, ProjectRecord } from "@/lib/storage/db";
 import type { ProjectRepository } from "@/lib/storage/project-repository";
 import { encodeChatStreamEvent } from "@/lib/streaming/chat-stream";
-import { encodeFinalizeStreamEvent } from "@/lib/streaming/finalize-stream";
 
 import { useAssessmentSession } from "./use-assessment-session";
 
@@ -107,39 +106,38 @@ function chatResponse(content: string): Response {
   );
 }
 
-function finalizeResponse(options?: { unavailable?: boolean }): Response {
+function finalizeJobResponses(options?: { unavailable?: boolean }): Response[] {
   const unavailable = options?.unavailable ?? false;
   const snapshot = unavailable
     ? { ...researchSnapshot, sources: [], status: "unavailable" as const }
     : researchSnapshot;
-  const events = unavailable
-    ? [
-        encodeFinalizeStreamEvent({
-          type: "research_complete",
-          snapshot,
-        }),
-        encodeFinalizeStreamEvent({
-          type: "error",
-          stage: "researching",
-          code: "research_unavailable",
-          message: "外部调研不可用",
-          retryable: true,
-        }),
-      ]
-    : [
-        encodeFinalizeStreamEvent({ type: "status", stage: "researching" }),
-        encodeFinalizeStreamEvent({ type: "research_complete", snapshot }),
-        encodeFinalizeStreamEvent({ type: "status", stage: "analyzing" }),
-        encodeFinalizeStreamEvent({ type: "status", stage: "scoring" }),
-        encodeFinalizeStreamEvent({
-          type: "assessment",
-          result: finalResponse(),
-        }),
-        encodeFinalizeStreamEvent({ type: "complete" }),
-      ];
-  return new Response(events.join(""), {
-    headers: { "Content-Type": "text/event-stream" },
-  });
+  const base = {
+    id: "job-1",
+    stage: unavailable ? "researching" : "scoring",
+    researchSnapshot: snapshot,
+    createdAt: "2026-07-23T00:00:00.000Z",
+    updatedAt: "2026-07-23T00:00:01.000Z",
+  };
+  return [
+    Response.json({ jobId: "job-1", state: "queued" }, { status: 202 }),
+    Response.json(
+      unavailable
+        ? {
+            ...base,
+            state: "failed",
+            error: {
+              code: "research_unavailable",
+              message: "外部调研不可用。",
+              retryable: true,
+            },
+          }
+        : {
+            ...base,
+            state: "completed",
+            assessment: finalResponse(),
+          },
+    ),
+  ];
 }
 
 function repository(order: string[] = []): ProjectRepository {
@@ -233,7 +231,11 @@ it("excludes advisory messages from the finalization request", async () => {
     researchSnapshot: null,
     report: null,
   });
-  const fetcher = vi.fn().mockResolvedValue(finalizeResponse());
+  const [createJob, completedJob] = finalizeJobResponses();
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(createJob)
+    .mockResolvedValueOnce(completedJob);
   const { result } = renderHook(() =>
     useAssessmentSession({ repository: repo, fetcher }),
   );
@@ -275,13 +277,62 @@ it("sends follow-up chat without previous assessment fields", async () => {
   expect(body).not.toHaveProperty("questionHistory");
 });
 
+it("sends attachments with an interview answer and saves only a text summary", async () => {
+  const repo = repository();
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(chatResponse("First question"))
+    .mockResolvedValueOnce(chatResponse("Attachment noted"));
+  const { result } = renderHook(() =>
+    useAssessmentSession({ repository: repo, fetcher }),
+  );
+  await act(async () => {
+    await result.current.createAndAnalyze(project.description);
+  });
+
+  await act(async () => {
+    await result.current.answerQuestion("Please read these files", [
+      {
+        id: "doc-1",
+        name: "quote.txt",
+        mimeType: "text/plain",
+        kind: "document",
+        text: "MOQ 500 bottles",
+      },
+      {
+        id: "image-1",
+        name: "label.png",
+        mimeType: "image/png",
+        kind: "image",
+        dataUrl: "data:image/png;base64,AAAA",
+      },
+    ]);
+  });
+
+  const body = JSON.parse(String(fetcher.mock.calls[1][1]?.body));
+  expect(body.attachments).toHaveLength(2);
+  expect(body.attachments[0]).toMatchObject({ name: "quote.txt" });
+  expect(body.attachments[1]).toMatchObject({ name: "label.png" });
+  expect(repo.appendMessage).toHaveBeenNthCalledWith(
+    3,
+    expect.objectContaining({
+      content: expect.stringContaining("quote.txt"),
+    }),
+  );
+  expect(JSON.stringify(vi.mocked(repo.appendMessage).mock.calls)).not.toContain(
+    "data:image/png",
+  );
+});
+
 it("persists research and the stage assessment without creating a report", async () => {
   const order: string[] = [];
   const repo = repository(order);
+  const [createJob, completedJob] = finalizeJobResponses();
   const fetcher = vi
     .fn()
     .mockResolvedValueOnce(chatResponse("继续补充订单来源。"))
-    .mockResolvedValueOnce(finalizeResponse());
+    .mockResolvedValueOnce(createJob)
+    .mockResolvedValueOnce(completedJob);
   const { result } = renderHook(() =>
     useAssessmentSession({ repository: repo, fetcher }),
   );
@@ -295,7 +346,8 @@ it("persists research and the stage assessment without creating a report", async
   });
 
   expect(completed).toBe(true);
-  expect(fetcher.mock.calls[1][0]).toBe("/api/finalize");
+  expect(fetcher.mock.calls[1][0]).toBe("/api/finalize-jobs");
+  expect(fetcher.mock.calls[2][0]).toBe("/api/finalize-jobs/job-1");
   expect(order).toEqual(["research", "assessment"]);
   expect(repo.saveAssessment).toHaveBeenCalledWith(
     expect.objectContaining({ researchStatus: "completed" }),
@@ -307,11 +359,17 @@ it("persists research and the stage assessment without creating a report", async
 
 it("keeps unavailable research for retry and supports interview-only fallback", async () => {
   const repo = repository();
+  const [createFailedJob, failedJob] = finalizeJobResponses({
+    unavailable: true,
+  });
+  const [createCompletedJob, completedJob] = finalizeJobResponses();
   const fetcher = vi
     .fn()
     .mockResolvedValueOnce(chatResponse("继续补充。"))
-    .mockResolvedValueOnce(finalizeResponse({ unavailable: true }))
-    .mockResolvedValueOnce(finalizeResponse());
+    .mockResolvedValueOnce(createFailedJob)
+    .mockResolvedValueOnce(failedJob)
+    .mockResolvedValueOnce(createCompletedJob)
+    .mockResolvedValueOnce(completedJob);
   const { result } = renderHook(() =>
     useAssessmentSession({ repository: repo, fetcher }),
   );
@@ -330,7 +388,7 @@ it("keeps unavailable research for retry and supports interview-only fallback", 
     await result.current.finalizeCurrent("interview_only");
   });
 
-  const body = JSON.parse(String(fetcher.mock.calls[2][1]?.body));
+  const body = JSON.parse(String(fetcher.mock.calls[3][1]?.body));
   expect(body.researchMode).toBe("interview_only");
   expect(body.researchSnapshot.status).toBe("unavailable");
 });

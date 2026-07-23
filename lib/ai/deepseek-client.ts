@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { ChatAttachment } from "@/lib/attachments/attachment-types";
+
 export interface GenerateResult {
   text: string;
   researchAvailable: false;
@@ -8,6 +10,7 @@ export interface GenerateResult {
 export interface GenerateInput {
   systemPrompt: string;
   userPrompt: string;
+  attachments?: ChatAttachment[];
   signal?: AbortSignal;
 }
 
@@ -52,7 +55,7 @@ export class DeepSeekClient {
     this.apiKey = options.apiKey;
     this.model = options.model;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.timeoutMs = options.timeoutMs ?? 120_000;
+    this.timeoutMs = options.timeoutMs ?? 300_000;
   }
 
   async generate(input: GenerateInput): Promise<GenerateResult> {
@@ -75,10 +78,7 @@ export class DeepSeekClient {
         },
         body: JSON.stringify({
           model: this.model,
-          messages: [
-            { role: "system", content: input.systemPrompt },
-            { role: "user", content: input.userPrompt },
-          ],
+          messages: buildMessages(input),
           thinking: { type: "enabled" },
           reasoning_effort: "high",
           response_format: { type: "json_object" },
@@ -163,10 +163,7 @@ export class DeepSeekClient {
         },
         body: JSON.stringify({
           model: this.model,
-          messages: [
-            { role: "system", content: input.systemPrompt },
-            { role: "user", content: input.userPrompt },
-          ],
+          messages: buildMessages(input),
           thinking: { type: "enabled" },
           reasoning_effort: "high",
           temperature: 0.2,
@@ -259,6 +256,56 @@ export class DeepSeekClient {
       input.signal?.removeEventListener("abort", abortFromCaller);
     }
   }
+}
+
+type ProviderMessageContent =
+  | string
+  | Array<
+      | { type: "text"; text: string }
+      | { type: "image_url"; image_url: { url: string } }
+    >;
+
+function buildMessages(input: GenerateInput): Array<{
+  role: "system" | "user";
+  content: ProviderMessageContent;
+}> {
+  return [
+    { role: "system", content: input.systemPrompt },
+    { role: "user", content: buildUserContent(input) },
+  ];
+}
+
+function buildUserContent(input: GenerateInput): ProviderMessageContent {
+  const attachments = input.attachments ?? [];
+  if (attachments.length === 0) return input.userPrompt;
+
+  const documentText = attachments
+    .filter((attachment) => attachment.kind === "document" && attachment.text)
+    .map(
+      (attachment) =>
+        `文档：${attachment.name}\n类型：${attachment.mimeType}\n内容：\n${attachment.text}`,
+    );
+  const text = [
+    input.userPrompt,
+    documentText.length > 0
+      ? `用户本轮上传的文档材料如下，请把它们当作用户提供的待核实证据读取：\n\n${documentText.join("\n\n---\n\n")}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const images = attachments.filter(
+    (attachment) => attachment.kind === "image" && attachment.dataUrl,
+  );
+
+  if (images.length === 0) return text;
+
+  return [
+    { type: "text", text },
+    ...images.map((attachment) => ({
+      type: "image_url" as const,
+      image_url: { url: attachment.dataUrl ?? "" },
+    })),
+  ];
 }
 
 export function createDeepSeekClientFromEnv(): DeepSeekClient {

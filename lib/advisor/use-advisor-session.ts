@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { appendAttachmentSummary } from "@/lib/attachments/attachment-summary";
+import type { ChatAttachment } from "@/lib/attachments/attachment-types";
 import { isAdvisoryMessage } from "@/lib/conversation/message-stage";
 import type { ResearchSnapshotRecord } from "@/lib/research/research-types";
 import type {
@@ -58,6 +60,7 @@ export function useAdvisorSession(options: {
   const pendingRequestRef = useRef<{
     mode: AdvisorMode;
     messages: MessageRecord[];
+    attachments?: ChatAttachment[];
   } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const requestRef = useRef(0);
@@ -66,6 +69,7 @@ export function useAdvisorSession(options: {
     async (
       mode: AdvisorMode,
       messages: MessageRecord[],
+      attachments: ChatAttachment[] = [],
     ): Promise<boolean> => {
       const project = projectRef.current;
       const assessment = assessmentRef.current;
@@ -90,6 +94,7 @@ export function useAdvisorSession(options: {
             researchSnapshotRef.current,
           ),
           messages,
+          attachments,
           signal: controller.signal,
           onDelta(draft) {
             if (requestRef.current !== requestNumber) return;
@@ -141,7 +146,7 @@ export function useAdvisorSession(options: {
           }));
           return false;
         }
-        pendingRequestRef.current = { mode, messages };
+        pendingRequestRef.current = { mode, messages, attachments };
         setState((current) => ({
           ...current,
           phase: "ready",
@@ -231,7 +236,10 @@ export function useAdvisorSession(options: {
   }, [projectId, repository, runRequest]);
 
   const send = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (
+      text: string,
+      attachments: ChatAttachment[] = [],
+    ): Promise<boolean> => {
       const project = projectRef.current;
       const content = text.trim();
       if (!project || !content || state.phase !== "ready") return false;
@@ -239,7 +247,7 @@ export function useAdvisorSession(options: {
         id: crypto.randomUUID(),
         projectId: project.id,
         role: "user",
-        content,
+        content: appendAttachmentSummary(content, attachments),
         round: messagesRef.current.filter(({ role }) => role === "user").length + 1,
         createdAt: new Date().toISOString(),
         stage: "advisory",
@@ -261,7 +269,7 @@ export function useAdvisorSession(options: {
       const messages = [...messagesRef.current, userMessage];
       messagesRef.current = messages;
       setState((current) => ({ ...current, messages }));
-      return await runRequest("reply", messages);
+      return await runRequest("reply", messages, attachments);
     },
     [repository, runRequest, state.phase],
   );
@@ -269,7 +277,7 @@ export function useAdvisorSession(options: {
   const retry = useCallback(async (): Promise<boolean> => {
     const pending = pendingRequestRef.current;
     if (!pending) return false;
-    return await runRequest(pending.mode, pending.messages);
+    return await runRequest(pending.mode, pending.messages, pending.attachments);
   }, [runRequest]);
 
   const stop = useCallback(() => {

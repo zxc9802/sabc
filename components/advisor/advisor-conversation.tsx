@@ -1,6 +1,8 @@
 import type { FormEvent } from "react";
 
+import { AttachmentPicker } from "@/components/chat/attachment-picker";
 import { ChatMessageContent } from "@/components/chat/chat-message-content";
+import type { ChatAttachment } from "@/lib/attachments/attachment-types";
 import type {
   MessageRecord,
   ProjectRecord,
@@ -23,7 +25,11 @@ interface AdvisorConversationProps {
   reportPhase: FinalReportGenerationPhase;
   reportError: FinalReportGenerationError | null;
   answer: string;
+  attachments: ChatAttachment[];
+  attachmentError: string | null;
   onAnswerChange: (value: string) => void;
+  onFilesSelected: (files: File[]) => void;
+  onAttachmentRemove: (id: string) => void;
   onSend: () => void;
   onRetry: () => void;
   onStop: () => void;
@@ -40,7 +46,11 @@ export function AdvisorConversation({
   reportPhase,
   reportError,
   answer,
+  attachments,
+  attachmentError,
   onAnswerChange,
+  onFilesSelected,
+  onAttachmentRemove,
   onSend,
   onRetry,
   onStop,
@@ -144,6 +154,13 @@ export function AdvisorConversation({
             disabled={busy}
             placeholder="例如：为什么不是 S 级？我应该先验证哪一个风险？"
             onChange={(event) => onAnswerChange(event.target.value)}
+          />
+          <AttachmentPicker
+            attachments={attachments}
+            busy={busy}
+            error={attachmentError}
+            onFilesSelected={onFilesSelected}
+            onRemove={onAttachmentRemove}
           />
           <div className="mt-3 flex justify-end gap-2">
             <button

@@ -125,7 +125,7 @@ it("maps AbortError to a retryable timeout", async () => {
   });
 });
 
-it("allows long structured responses for 120 seconds by default", async () => {
+it("allows long structured responses for 300 seconds by default", async () => {
   vi.useFakeTimers();
   let signal: AbortSignal | undefined;
   const fetchImpl = vi.fn(
@@ -144,7 +144,7 @@ it("allows long structured responses for 120 seconds by default", async () => {
     .catch((error: unknown) => error);
 
   try {
-    await vi.advanceTimersByTimeAsync(119_999);
+    await vi.advanceTimersByTimeAsync(299_999);
     expect(signal?.aborted).toBe(false);
 
     await vi.advanceTimersByTimeAsync(1);
@@ -190,6 +190,53 @@ it("streams content deltas and ignores private reasoning deltas", async () => {
   const body = JSON.parse(String(fetchImpl.mock.calls[0][1]?.body));
   expect(body.stream).toBe(true);
   expect(body.response_format).toBeUndefined();
+});
+
+it("streams with document text and image inputs when attachments are present", async () => {
+  const fetchImpl = vi.fn(async () =>
+    providerStream([
+      'data: {"choices":[{"delta":{"content":"image noted"}}]}\n\n',
+      "data: [DONE]\n\n",
+    ]),
+  );
+  const client = new DeepSeekClient({ ...options, fetchImpl });
+
+  const chunks: string[] = [];
+  for await (const chunk of client.stream({
+    systemPrompt: "Explain.",
+    userPrompt: "project data",
+    attachments: [
+      {
+        id: "doc-1",
+        name: "quote.txt",
+        mimeType: "text/plain",
+        kind: "document",
+        text: "MOQ 500 bottles",
+      },
+      {
+        id: "image-1",
+        name: "shelf.png",
+        mimeType: "image/png",
+        kind: "image",
+        dataUrl: "data:image/png;base64,AAAA",
+      },
+    ],
+  })) {
+    chunks.push(chunk);
+  }
+
+  expect(chunks).toEqual(["image noted"]);
+  const body = JSON.parse(String(fetchImpl.mock.calls[0][1]?.body));
+  expect(body.messages[1].content).toEqual([
+    expect.objectContaining({
+      type: "text",
+      text: expect.stringContaining("MOQ 500 bottles"),
+    }),
+    {
+      type: "image_url",
+      image_url: { url: "data:image/png;base64,AAAA" },
+    },
+  ]);
 });
 
 it("maps an externally aborted stream to a non-retryable stop", async () => {

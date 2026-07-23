@@ -205,6 +205,47 @@ it("persists advisory follow-ups and excludes interview messages", async () => {
   );
 });
 
+it("sends advisory attachments and saves only their names in history", async () => {
+  const repo = repository();
+  const fetcher = vi.fn().mockResolvedValue(completeResponse("Attachment checked."));
+  const { result } = renderHook(() =>
+    useAdvisorSession({ projectId: project.id, repository: repo, fetcher }),
+  );
+  await waitFor(() => expect(result.current.phase).toBe("ready"));
+
+  await act(async () => {
+    await result.current.send("Read these materials", [
+      {
+        id: "doc-1",
+        name: "quote.txt",
+        mimeType: "text/plain",
+        kind: "document",
+        text: "MOQ 500 bottles",
+      },
+      {
+        id: "image-1",
+        name: "label.png",
+        mimeType: "image/png",
+        kind: "image",
+        dataUrl: "data:image/png;base64,AAAA",
+      },
+    ]);
+  });
+
+  const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body));
+  expect(body.attachments).toHaveLength(2);
+  expect(repo.appendMessage).toHaveBeenNthCalledWith(
+    1,
+    expect.objectContaining({
+      role: "user",
+      content: expect.stringContaining("label.png"),
+    }),
+  );
+  expect(JSON.stringify(vi.mocked(repo.appendMessage).mock.calls)).not.toContain(
+    "data:image/png",
+  );
+});
+
 it("retries a failed reply without saving the user message twice", async () => {
   const repo = repository();
   const fetcher = vi

@@ -7,6 +7,7 @@ import {
   type DeepSeekClient,
   ProviderError,
 } from "@/lib/ai/deepseek-client";
+import { chatAttachmentsSchema } from "@/lib/attachments/attachment-schema";
 import {
   buildInterviewData,
   buildInterviewSystemPrompt,
@@ -32,6 +33,7 @@ const requestSchema = z.strictObject({
     .max(200),
   interviewDepth: z.enum(["low", "medium", "high"]),
   round: z.number().int().min(0),
+  attachments: chatAttachmentsSchema.optional(),
 });
 
 type ChatRequest = z.infer<typeof requestSchema>;
@@ -97,6 +99,7 @@ async function streamChat(
     for await (const delta of client.stream({
       systemPrompt: buildInterviewSystemPrompt(input.interviewDepth),
       userPrompt: buildInterviewData(input),
+      attachments: input.attachments,
       signal,
     })) {
       content += delta;

@@ -110,6 +110,60 @@ it("calls browser fetch without binding it to the request options object", async
   });
 });
 
+it("sends document and image attachments with a follow-up question", async () => {
+  const fetcher = vi.fn().mockResolvedValue(
+    response([
+      encodeChatStreamEvent({
+        type: "complete",
+        messageId: "advisor-attachment-1",
+        content: "Check attached evidence.",
+      }),
+    ]),
+  );
+
+  await requestAdvisorMessage({
+    fetcher,
+    mode: "reply",
+    context,
+    messages: [
+      {
+        id: "user-1",
+        projectId: "project-1",
+        role: "user",
+        content: "Please read the attached material.",
+        round: 1,
+        createdAt: "2026-07-23T00:00:00.000Z",
+        stage: "advisory",
+        kind: "chat",
+      },
+    ],
+    attachments: [
+      {
+        id: "doc-1",
+        name: "quote.txt",
+        mimeType: "text/plain",
+        kind: "document",
+        text: "MOQ 500 bottles",
+      },
+      {
+        id: "image-1",
+        name: "label.png",
+        mimeType: "image/png",
+        kind: "image",
+        dataUrl: "data:image/png;base64,AAAA",
+      },
+    ],
+    signal: new AbortController().signal,
+    onDelta: vi.fn(),
+  });
+
+  const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body));
+  expect(body.attachments).toEqual([
+    expect.objectContaining({ name: "quote.txt", text: "MOQ 500 bottles" }),
+    expect.objectContaining({ name: "label.png", dataUrl: "data:image/png;base64,AAAA" }),
+  ]);
+});
+
 it("rejects safe HTTP, stream, and incomplete response errors", async () => {
   const input = {
     fetcher: vi.fn(),

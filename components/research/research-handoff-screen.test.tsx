@@ -12,7 +12,6 @@ import type {
   ProjectWorkspaceRecord,
 } from "@/lib/storage/db";
 import type { ProjectRepository } from "@/lib/storage/project-repository";
-import { encodeFinalizeStreamEvent } from "@/lib/streaming/finalize-stream";
 
 const navigation = vi.hoisted(() => ({ replace: vi.fn() }));
 vi.mock("next/navigation", () => ({
@@ -101,19 +100,20 @@ const snapshot: ResearchSnapshotRecord = {
   updatedAt: "2026-07-22T02:00:00.000Z",
 };
 
-function finalizationResponse(): Response {
-  return new Response(
-    [
-      encodeFinalizeStreamEvent({ type: "status", stage: "planning_research" }),
-      encodeFinalizeStreamEvent({ type: "research_plan", queries: snapshot.queries }),
-      encodeFinalizeStreamEvent({ type: "status", stage: "researching" }),
-      encodeFinalizeStreamEvent({ type: "research_complete", snapshot }),
-      encodeFinalizeStreamEvent({ type: "status", stage: "analyzing" }),
-      encodeFinalizeStreamEvent({ type: "status", stage: "scoring" }),
-      encodeFinalizeStreamEvent({ type: "assessment", result: finalResult }),
-      encodeFinalizeStreamEvent({ type: "complete" }),
-    ].join(""),
-  );
+function finalizationResponses(): Response[] {
+  return [
+    Response.json({ jobId: "job-1", state: "queued" }, { status: 202 }),
+    Response.json({
+      id: "job-1",
+      state: "completed",
+      stage: "scoring",
+      researchQueries: snapshot.queries,
+      researchSnapshot: snapshot,
+      assessment: finalResult,
+      createdAt: "2026-07-23T00:00:00.000Z",
+      updatedAt: "2026-07-23T00:00:01.000Z",
+    }),
+  ];
 }
 
 function createRepository(input?: {
@@ -219,7 +219,11 @@ beforeEach(() => {
 
 it("saves only the stage assessment and enters the second agent", async () => {
   const { repository, workspace } = createRepository();
-  const fetcher = vi.fn().mockResolvedValueOnce(finalizationResponse());
+  const [createJob, completedJob] = finalizationResponses();
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(createJob)
+    .mockResolvedValueOnce(completedJob);
   render(
     <ResearchHandoffScreen
       projectId={project.id}
@@ -235,7 +239,10 @@ it("saves only the stage assessment and enters the second agent", async () => {
     expect(navigation.replace).toHaveBeenCalledWith("/advisor/project-1");
   });
 
-  expect(fetcher.mock.calls.map(([url]) => url)).toEqual(["/api/finalize"]);
+  expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+    "/api/finalize-jobs",
+    "/api/finalize-jobs/job-1",
+  ]);
   expect(workspace.assessments).toHaveLength(1);
   expect(workspace.report).toBeNull();
   expect(workspace.messages.some(({ stage }) => stage === "advisory")).toBe(false);
