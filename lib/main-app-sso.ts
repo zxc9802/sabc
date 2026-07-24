@@ -1,6 +1,5 @@
 const PRODUCT = 'sabc';
 const COOKIE_NAME = 'qycm_sabc_sso';
-const SESSION_MAX_AGE_SECONDS = 5 * 60;
 const MAIN_APP_URL_FALLBACK = 'https://www.qycm.top';
 const PUBLIC_SABC_APP_URL = 'https://sabc.qycm.top';
 
@@ -23,6 +22,7 @@ type ExchangeResponse = {
     token?: unknown;
     redirectPath?: unknown;
     user?: unknown;
+    expiresAt?: unknown;
   };
 };
 
@@ -90,6 +90,10 @@ function isMainAppSession(value: unknown): value is MainAppSession {
   );
 }
 
+function isFutureExpiration(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > Date.now();
+}
+
 export function getMainAppUrl(): string {
   return (process.env.MAIN_APP_URL?.trim() || MAIN_APP_URL_FALLBACK).replace(
     /\/+$/,
@@ -111,13 +115,13 @@ export function getMainAppSessionCookieName(): string {
   return COOKIE_NAME;
 }
 
-export function getMainAppSessionCookieOptions() {
+export function getMainAppSessionCookieOptions(expiresAt?: number) {
   return {
     httpOnly: true,
     secure: true,
     sameSite: 'lax' as const,
     path: '/',
-    maxAge: SESSION_MAX_AGE_SECONDS,
+    maxAge: expiresAt ? Math.max(0, Math.floor((expiresAt - Date.now()) / 1000)) : 0,
   };
 }
 
@@ -194,11 +198,13 @@ export async function exchangeMainAppSsoTicket(
     .catch(() => ({}))) as ExchangeResponse;
   const token = payload.data?.token;
   const user = payload.data?.user;
+  const expiresAt = payload.data?.expiresAt;
   if (
     !response.ok ||
     !payload.success ||
     typeof token !== 'string' ||
-    !isMainAppUser(user)
+    !isMainAppUser(user) ||
+    !isFutureExpiration(expiresAt)
   ) {
     throw new Error('Main-site SSO exchange was rejected.');
   }
@@ -208,7 +214,7 @@ export async function exchangeMainAppSsoTicket(
     session: {
       token,
       user,
-      expiresAt: Date.now() + SESSION_MAX_AGE_SECONDS * 1000,
+      expiresAt,
     },
   };
 }

@@ -60,4 +60,29 @@ describe('main application SSO regression', () => {
     expect(proxy).toMatch(/api\/sso\/callback/);
     expect(proxy).toMatch(/validateMainAppSession/);
   });
+
+  it('keeps the child session until the main-issued token expires', async () => {
+    const sso = await import('./main-app-sso');
+    process.env.APP_SESSION_SECRET = 'sabc-test-session-secret';
+    process.env.MAIN_APP_SSO_CLIENT_SECRET = 'sabc-client-secret';
+    const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      success: true,
+      data: {
+        token: 'main-token',
+        redirectPath: '/report',
+        expiresAt,
+        user: { id: 'user-1', account: 'member@example.com', nickname: '成员', role: 'member' },
+      },
+    }), { status: 200 })) as typeof fetch;
+
+    try {
+      const { session } = await sso.exchangeMainAppSsoTicket('ticket-1');
+      expect(session.expiresAt).toBe(expiresAt);
+      expect(sso.getMainAppSessionCookieOptions(session.expiresAt).maxAge).toBeGreaterThan(6 * 24 * 60 * 60);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
