@@ -11,7 +11,6 @@ import type {
 } from "@/lib/storage/db";
 import type { ProjectRepository } from "@/lib/storage/project-repository";
 import { encodeChatStreamEvent } from "@/lib/streaming/chat-stream";
-import { encodeFinalReportStreamEvent } from "@/lib/report/final-report-stream";
 
 const navigation = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn() }));
 vi.mock("next/navigation", () => ({
@@ -314,19 +313,23 @@ it("does not generate a report until the user clicks the explicit action", async
     sources: [],
     researchStatus: "completed",
   } as const;
-  const fetcher = vi.fn().mockResolvedValue(
-    new Response(
-      [
-        encodeFinalReportStreamEvent({ type: "status", stage: "analyzing" }),
-        encodeFinalReportStreamEvent({ type: "status", stage: "scoring" }),
-        encodeFinalReportStreamEvent({
-          type: "assessment",
-          result: finalResult,
-        }),
-        encodeFinalReportStreamEvent({ type: "complete" }),
-      ].join(""),
-    ),
-  );
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(
+      Response.json(
+        { jobId: "report-job-1", state: "queued" },
+        { status: 202 },
+      ),
+    )
+    .mockResolvedValueOnce(
+      Response.json({
+        id: "report-job-1",
+        state: "completed",
+        assessment: finalResult,
+        createdAt: "2026-07-26T00:00:00.000Z",
+        updatedAt: "2026-07-26T00:00:01.000Z",
+      }),
+    );
 
   render(
     <AdvisorScreen
@@ -337,10 +340,20 @@ it("does not generate a report until the user clicks the explicit action", async
   );
 
   await screen.findByText("先补齐复购证据。");
-  expect(fetcher.mock.calls.map(([url]) => url)).not.toContain("/api/report");
+  expect(fetcher.mock.calls.map(([url]) => url)).not.toContain(
+    "/api/report-jobs",
+  );
   await user.click(screen.getByRole("button", { name: "生成最终报告" }));
 
-  expect(fetcher).toHaveBeenCalledWith("/api/report", expect.any(Object));
+  expect(fetcher).toHaveBeenNthCalledWith(
+    1,
+    "/api/report-jobs",
+    expect.any(Object),
+  );
+  expect(fetcher).toHaveBeenNthCalledWith(
+    2,
+    "/api/report-jobs/report-job-1",
+  );
   await waitFor(() => {
     expect(navigation.push).toHaveBeenCalledWith("/report/project-1");
   });

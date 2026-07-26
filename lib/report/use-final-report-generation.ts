@@ -4,9 +4,9 @@ import { useCallback, useRef, useState } from "react";
 
 import { createReportContent } from "@/lib/report/create-report-content";
 import {
-  FinalReportStreamProtocolError,
-  readFinalReportStream,
-} from "@/lib/report/final-report-stream";
+  FinalReportJobProtocolError,
+  readFinalReportJob,
+} from "@/lib/report/final-report-job";
 import { createStageAssessmentContext } from "@/lib/report/stage-assessment-context";
 import type {
   AssessmentRecord,
@@ -61,7 +61,7 @@ export function useFinalReportGeneration(options: {
     let assessment: AssessmentRecord | null = null;
     let completed = false;
     try {
-      const response = await fetcher("/api/report", {
+      const response = await fetcher("/api/report-jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -81,36 +81,53 @@ export function useFinalReportGeneration(options: {
       });
       if (!response.ok) throw await responseError(response);
 
-      await readFinalReportStream(response, (event) => {
-        if (event.type === "status") {
-          setPhase(event.stage);
-          return;
+      const creation = (await response.json()) as unknown;
+      if (
+        !isRecord(creation) ||
+        typeof creation.jobId !== "string" ||
+        creation.jobId.length === 0
+      ) {
+        throw new ReportGenerationRequestError(
+          "invalid_response",
+          "最终报告任务创建失败，请重试。",
+          true,
+        );
+      }
+
+      while (!completed) {
+        const pollResponse = await fetcher(
+          `/api/report-jobs/${encodeURIComponent(creation.jobId)}`,
+        );
+        if (!pollResponse.ok) throw await responseError(pollResponse);
+
+        const job = await readFinalReportJob(pollResponse);
+        if (job.stage) setPhase(job.stage);
+        if (job.state === "failed") {
+          throw new ReportGenerationRequestError(
+            job.error.code,
+            job.error.message,
+            job.error.retryable,
+          );
         }
-        if (event.type === "assessment") {
+        if (job.state === "completed") {
+          const value = job.assessment;
           assessment = {
             id: crypto.randomUUID(),
             projectId,
-            promptVersion: event.result.promptVersion,
-            sources: event.result.sources,
-            researchStatus: event.result.researchStatus,
-            analysis: event.result.analysis,
-            scored: event.result.scored,
+            promptVersion: value.promptVersion,
+            sources: value.sources,
+            researchStatus: value.researchStatus,
+            analysis: value.analysis,
+            scored: value.scored,
             nextQuestion: null,
-            diff: event.result.diff,
+            diff: value.diff,
             createdAt: new Date().toISOString(),
           };
-          return;
-        }
-        if (event.type === "complete") {
           completed = true;
-          return;
+          break;
         }
-        throw new ReportGenerationRequestError(
-          event.code,
-          event.message,
-          event.retryable,
-        );
-      });
+        await waitForPoll();
+      }
     } catch (caught) {
       const reportError = normalizeError(caught);
       setPhase("idle");
@@ -216,7 +233,7 @@ function normalizeError(caught: unknown): FinalReportGenerationError {
       retryable: caught.retryable,
     };
   }
-  if (caught instanceof FinalReportStreamProtocolError) {
+  if (caught instanceof FinalReportJobProtocolError) {
     return { code: caught.code, message: caught.message, retryable: true };
   }
   return {
@@ -224,4 +241,14 @@ function normalizeError(caught: unknown): FinalReportGenerationError {
     message: "最终报告请求失败，请稍后重试。",
     retryable: true,
   };
+}
+
+function waitForPoll(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 2_000);
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
 }

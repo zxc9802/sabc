@@ -10,7 +10,6 @@ import type {
 } from "@/lib/storage/db";
 import type { ProjectRepository } from "@/lib/storage/project-repository";
 
-import { encodeFinalReportStreamEvent } from "./final-report-stream";
 import { useFinalReportGeneration } from "./use-final-report-generation";
 
 const project: ProjectRecord = {
@@ -152,15 +151,21 @@ function repository(value: ProjectWorkspaceRecord): ProjectRepository {
   };
 }
 
-function successResponse(): Response {
-  return new Response(
-    [
-      encodeFinalReportStreamEvent({ type: "status", stage: "analyzing" }),
-      encodeFinalReportStreamEvent({ type: "status", stage: "scoring" }),
-      encodeFinalReportStreamEvent({ type: "assessment", result: result() }),
-      encodeFinalReportStreamEvent({ type: "complete" }),
-    ].join(""),
+function creationResponse(): Response {
+  return Response.json(
+    { jobId: "report-job-1", state: "queued" },
+    { status: 202 },
   );
+}
+
+function completedJobResponse(): Response {
+  return Response.json({
+    id: "report-job-1",
+    state: "completed",
+    assessment: result(),
+    createdAt: "2026-07-26T00:00:00.000Z",
+    updatedAt: "2026-07-26T00:00:01.000Z",
+  });
 }
 
 beforeEach(() => {
@@ -171,7 +176,10 @@ beforeEach(() => {
 it("generates and saves a final report only when generate is called", async () => {
   const value = workspace();
   const repo = repository(value);
-  const fetcher = vi.fn().mockResolvedValue(successResponse());
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(creationResponse())
+    .mockResolvedValueOnce(completedJobResponse());
   const { result: hook } = renderHook(() =>
     useFinalReportGeneration({ projectId: project.id, repository: repo, fetcher }),
   );
@@ -183,7 +191,15 @@ it("generates and saves a final report only when generate is called", async () =
   });
 
   expect(completed).toBe(true);
-  expect(fetcher).toHaveBeenCalledWith("/api/report", expect.any(Object));
+  expect(fetcher).toHaveBeenNthCalledWith(
+    1,
+    "/api/report-jobs",
+    expect.any(Object),
+  );
+  expect(fetcher).toHaveBeenNthCalledWith(
+    2,
+    "/api/report-jobs/report-job-1",
+  );
   expect(repo.saveFinalization).toHaveBeenCalledWith(
     expect.objectContaining({ promptVersion: "report.v1" }),
     expect.objectContaining({ assessmentId: expect.any(String) }),
@@ -193,17 +209,23 @@ it("generates and saves a final report only when generate is called", async () =
 
 it("keeps provider failures out of storage", async () => {
   const repo = repository(workspace());
-  const fetcher = vi.fn().mockResolvedValue(
-    new Response(
-      encodeFinalReportStreamEvent({
-        type: "error",
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(creationResponse())
+    .mockResolvedValueOnce(
+      Response.json({
+        id: "report-job-1",
+        state: "failed",
         stage: "analyzing",
-        code: "provider_timeout",
-        message: "生成超时",
-        retryable: true,
+        error: {
+          code: "provider_timeout",
+          message: "生成超时",
+          retryable: true,
+        },
+        createdAt: "2026-07-26T00:00:00.000Z",
+        updatedAt: "2026-07-26T00:00:01.000Z",
       }),
-    ),
-  );
+    );
   const { result: hook } = renderHook(() =>
     useFinalReportGeneration({ projectId: project.id, repository: repo, fetcher }),
   );
@@ -221,7 +243,10 @@ it("retries only the local transaction after a save failure", async () => {
   vi.mocked(repo.saveFinalization)
     .mockRejectedValueOnce(new Error("storage full"))
     .mockResolvedValueOnce(undefined);
-  const fetcher = vi.fn().mockResolvedValue(successResponse());
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(creationResponse())
+    .mockResolvedValueOnce(completedJobResponse());
   const { result: hook } = renderHook(() =>
     useFinalReportGeneration({ projectId: project.id, repository: repo, fetcher }),
   );
@@ -234,7 +259,7 @@ it("retries only the local transaction after a save failure", async () => {
     await hook.current.retrySave();
   });
 
-  expect(fetcher).toHaveBeenCalledOnce();
+  expect(fetcher).toHaveBeenCalledTimes(2);
   expect(repo.saveFinalization).toHaveBeenCalledTimes(2);
   expect(hook.current.error).toBeNull();
 });
