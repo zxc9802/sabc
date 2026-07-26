@@ -2,6 +2,8 @@ const PRODUCT = 'sabc';
 const COOKIE_NAME = 'qycm_sabc_sso';
 const MAIN_APP_URL_FALLBACK = 'https://www.qycm.top';
 const PUBLIC_SABC_APP_URL = 'https://sabc.qycm.top';
+const SESSION_VALIDATION_CACHE_MS = 30_000;
+const sessionValidationCache = new Map<string, number>();
 
 export type MainAppUser = {
   id: string;
@@ -222,13 +224,34 @@ export async function exchangeMainAppSsoTicket(
 export async function validateMainAppSession(
   session: MainAppSession,
 ): Promise<boolean> {
+  const now = Date.now();
+  const cacheKey = await sessionValidationCacheKey(session.token);
+  for (const [key, expiresAt] of sessionValidationCache) {
+    if (expiresAt <= now) sessionValidationCache.delete(key);
+  }
+  if ((sessionValidationCache.get(cacheKey) ?? 0) > now) return true;
+
   try {
     const response = await fetch(`${getMainAppUrl()}/api/sso/session`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${session.token}` },
     });
+    if (response.ok) {
+      sessionValidationCache.set(
+        cacheKey,
+        Math.min(session.expiresAt, Date.now() + SESSION_VALIDATION_CACHE_MS),
+      );
+    }
     return response.ok;
   } catch {
     return false;
   }
+}
+
+async function sessionValidationCacheKey(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(token),
+  );
+  return base64UrlEncode(new Uint8Array(digest));
 }

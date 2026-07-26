@@ -261,6 +261,7 @@ async function resolveResearchSnapshot(options: {
 
   options.setStage("researching");
   send({ type: "status", stage: "researching" });
+  const researchStartedAt = Date.now();
   const results = await Promise.allSettled(
     plan.queries.map((query) => options.anySearchClient.search(query, signal)),
   );
@@ -270,6 +271,12 @@ async function resolveResearchSnapshot(options: {
     ),
   ));
   const failed = results.filter((result) => result.status === "rejected").length;
+  console.info("[sabc.research.timing]", {
+    queryCount: plan.queries.length,
+    sourceCount: sources.length,
+    failedCount: failed,
+    durationMs: Date.now() - researchStartedAt,
+  });
   const status =
     sources.length === 0
       ? "unavailable"

@@ -168,11 +168,13 @@ it("budgets external research before sending it to the final model", async () =>
   const queries = ["query one", "query two", "query three", "query four", "query five"];
   const providerOutputs = [{ queries }, classification, analysisResponse()];
   const providerBodies: Array<Record<string, unknown>> = [];
+  const anySearchBodies: Array<Record<string, unknown>> = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url, init) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       if (String(url).includes("api.anysearch.com")) {
+        anySearchBodies.push(body);
         const params = body.params as {
           arguments: { query: string };
         };
@@ -214,6 +216,7 @@ it("budgets external research before sending it to the final model", async () =>
   );
 
   expect(researchEvent?.snapshot.sources).toHaveLength(6);
+  expect(anySearchBodies).toHaveLength(3);
   expect(
     researchEvent?.snapshot.sources.every(({ snippet }) => snippet.length <= 800),
   ).toBe(true);

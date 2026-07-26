@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 
 import { createResearchPlan, ResearchPlanError } from "./research-plan";
 
-it("creates at most five sanitized public research queries", async () => {
+it("creates at most three sanitized public research queries with the fast profile", async () => {
   const generate = vi.fn(async () => ({
     text: JSON.stringify({
       queries: [
@@ -24,9 +24,16 @@ it("creates at most five sanitized public research queries", async () => {
     },
   );
 
-  expect(plan.queries).toHaveLength(5);
+  expect(plan.queries).toHaveLength(3);
   expect(plan.queries[1]).toBe("竞争格局");
   expect(JSON.stringify(plan)).not.toMatch(/boss@example\.com|13800138000/u);
+  expect(generate).toHaveBeenNthCalledWith(
+    1,
+    expect.objectContaining({
+      profile: "fast_json",
+      operation: "research_plan",
+    }),
+  );
 });
 
 it("repairs one malformed plan and rejects a plan with no public query", async () => {

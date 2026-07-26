@@ -65,6 +65,27 @@ it("sends the official non-streaming thinking JSON request", async () => {
   expect(String(init?.body)).not.toContain("private reasoning");
 });
 
+it("uses a smaller non-thinking request for fast structured tasks", async () => {
+  const fetchImpl = vi.fn(async () =>
+    Response.json({
+      choices: [{ message: { content: '{"queries":["market"]}' } }],
+    }),
+  );
+  const client = new DeepSeekClient({ ...options, fetchImpl });
+
+  await client.generate({
+    systemPrompt: "Only return json.",
+    userPrompt: "project data",
+    profile: "fast_json",
+  });
+
+  const body = JSON.parse(String(fetchImpl.mock.calls[0][1]?.body));
+  expect(body.max_tokens).toBe(2_000);
+  expect(body.thinking).toBeUndefined();
+  expect(body.reasoning_effort).toBeUndefined();
+  expect(body.response_format).toEqual({ type: "json_object" });
+});
+
 it("sanitizes provider rejection without exposing secrets or project text", async () => {
   const fetchImpl = vi.fn(async () =>
     new Response(`bad ${options.apiKey} untrusted project data`, { status: 401 }),

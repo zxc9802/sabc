@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { z } from "zod";
+import { z } from "zod";
 
 import type {
   AnalysisResponse,
@@ -10,7 +10,10 @@ import {
   analysisResponseSchema,
   classificationResponseSchema,
 } from "@/lib/ai/analysis-schema";
-import type { GenerateResult } from "@/lib/ai/deepseek-client";
+import type {
+  GenerateProfile,
+  GenerateResult,
+} from "@/lib/ai/deepseek-client";
 import {
   buildClassificationPrompt,
   buildRetryPrompt,
@@ -41,6 +44,8 @@ export interface ModelClient {
   generate(input: {
     systemPrompt: string;
     userPrompt: string;
+    profile?: GenerateProfile;
+    operation?: string;
     signal?: AbortSignal;
   }): Promise<GenerateResult>;
 }
@@ -78,6 +83,7 @@ export async function analyzeProject(
     buildClassificationPrompt(),
     JSON.stringify({ projectDescription: input.projectDescription }),
     classificationResponseSchema,
+    { profile: "fast_json", operation: "classification" },
     input.signal,
   );
   const rubric = getRubric(classification.primaryCategory);
@@ -90,6 +96,7 @@ export async function analyzeProject(
     }),
     buildAnalysisData(input, classification),
     analysisResponseSchema,
+    { profile: "analysis_json", operation: "analysis" },
     input.signal,
   );
 
@@ -152,19 +159,29 @@ async function generateValidated<T>(
   systemPrompt: string,
   userPrompt: string,
   schema: z.ZodType<T>,
+  task: { profile: GenerateProfile; operation: string },
   signal?: AbortSignal,
 ): Promise<T> {
-  const first = await client.generate({ systemPrompt, userPrompt, signal });
+  const first = await client.generate({
+    systemPrompt,
+    userPrompt,
+    ...task,
+    signal,
+  });
 
   try {
     return parseAndValidate(first.text, schema);
-  } catch {
+  } catch (error) {
+    const validationIssues = formatValidationIssues(error);
     const retry = await client.generate({
-      systemPrompt: buildRetryPrompt(systemPrompt),
+      systemPrompt: buildRetryPrompt(systemPrompt, validationIssues),
       userPrompt: JSON.stringify({
         originalData: userPrompt,
-        previousInvalidOutput: first.text.slice(0, 2_000),
+        validationIssues,
+        previousInvalidOutput: first.text.slice(0, 6_000),
       }),
+      profile: task.profile,
+      operation: `${task.operation}_repair`,
       signal,
     });
 
@@ -177,7 +194,20 @@ async function generateValidated<T>(
 }
 
 function parseAndValidate<T>(text: string, schema: z.ZodType<T>): T {
-  return schema.parse(JSON.parse(text) as unknown);
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu);
+  return schema.parse(JSON.parse(fenced?.[1] ?? trimmed) as unknown);
+}
+
+function formatValidationIssues(error: unknown): string[] {
+  if (error instanceof z.ZodError) {
+    return error.issues.slice(0, 12).map((issue) => {
+      const path = issue.path.length > 0 ? issue.path.join(".") : "$";
+      return `${path}: ${issue.message}`;
+    });
+  }
+  if (error instanceof SyntaxError) return ["$: invalid JSON syntax"];
+  return ["$: schema validation failed"];
 }
 
 function buildAnalysisData(

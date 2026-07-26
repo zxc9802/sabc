@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 describe('main application SSO regression', () => {
   it('keeps the callback route and authentication proxy in the deployed app', async () => {
@@ -81,6 +81,31 @@ describe('main application SSO regression', () => {
       const { session } = await sso.exchangeMainAppSsoTicket('ticket-1');
       expect(session.expiresAt).toBe(expiresAt);
       expect(sso.getMainAppSessionCookieOptions(session.expiresAt).maxAge).toBeGreaterThan(6 * 24 * 60 * 60);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('reuses a successful remote session validation for thirty seconds', async () => {
+    const sso = await import('./main-app-sso');
+    const originalFetch = globalThis.fetch;
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    globalThis.fetch = fetchImpl as typeof fetch;
+    const session = {
+      token: `cache-test-${crypto.randomUUID()}`,
+      user: {
+        id: 'user-1',
+        account: 'member@example.com',
+        nickname: '成员',
+        role: 'member',
+      },
+      expiresAt: Date.now() + 60_000,
+    };
+
+    try {
+      await expect(sso.validateMainAppSession(session)).resolves.toBe(true);
+      await expect(sso.validateMainAppSession(session)).resolves.toBe(true);
+      expect(fetchImpl).toHaveBeenCalledOnce();
     } finally {
       globalThis.fetch = originalFetch;
     }

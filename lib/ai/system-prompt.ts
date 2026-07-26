@@ -109,8 +109,15 @@ export function buildClassificationPrompt(): string {
 }`;
 }
 
-export function buildRetryPrompt(originalPrompt: string): string {
-  return `${originalPrompt}\n\n上一次输出未通过结构校验。请修正后只返回严格合法的 json 对象。`;
+export function buildRetryPrompt(
+  originalPrompt: string,
+  validationIssues: string[] = [],
+): string {
+  const issueText =
+    validationIssues.length > 0
+      ? `具体错误：\n${validationIssues.map((issue) => `- ${issue}`).join("\n")}\n`
+      : "";
+  return `${originalPrompt}\n\n上一次输出未通过结构校验。\n${issueText}请逐项修正后只返回严格合法的 json 对象。`;
 }
 
 const DEPTH_GUIDANCE: Record<InterviewDepth, string> = {

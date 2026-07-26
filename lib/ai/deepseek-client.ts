@@ -7,10 +7,14 @@ export interface GenerateResult {
   researchAvailable: false;
 }
 
+export type GenerateProfile = "fast_json" | "analysis_json";
+
 export interface GenerateInput {
   systemPrompt: string;
   userPrompt: string;
   attachments?: ChatAttachment[];
+  profile?: GenerateProfile;
+  operation?: string;
   signal?: AbortSignal;
 }
 
@@ -59,6 +63,7 @@ export class DeepSeekClient {
   }
 
   async generate(input: GenerateInput): Promise<GenerateResult> {
+    const startedAt = Date.now();
     const controller = new AbortController();
     let timedOut = false;
     const abortFromCaller = () => controller.abort();
@@ -68,6 +73,7 @@ export class DeepSeekClient {
       timedOut = true;
       controller.abort();
     }, this.timeoutMs);
+    const requestOptions = generateRequestOptions(input.profile);
 
     try {
       const response = await this.fetchImpl(this.endpoint, {
@@ -79,11 +85,9 @@ export class DeepSeekClient {
         body: JSON.stringify({
           model: this.model,
           messages: buildMessages(input),
-          thinking: { type: "enabled" },
-          reasoning_effort: "high",
+          ...requestOptions,
           response_format: { type: "json_object" },
           temperature: 0.2,
-          max_tokens: 12_000,
           stream: false,
         }),
         signal: controller.signal,
@@ -112,31 +116,38 @@ export class DeepSeekClient {
         );
       }
 
+      logGenerateTiming(input, startedAt, "completed");
       return { text: content.trim(), researchAvailable: false };
     } catch (error) {
-      if (error instanceof ProviderError) throw error;
-      if (error instanceof DOMException && error.name === "AbortError") {
+      let providerError: ProviderError;
+      if (error instanceof ProviderError) {
+        providerError = error;
+      } else if (error instanceof DOMException && error.name === "AbortError") {
         if (input.signal?.aborted && !timedOut) {
-          throw new ProviderError(
+          providerError = new ProviderError(
             "已停止生成。",
             "provider_aborted",
             499,
             false,
           );
+        } else {
+          providerError = new ProviderError(
+            "AI 服务响应超时，请重新分析。",
+            "provider_timeout",
+            504,
+            true,
+          );
         }
-        throw new ProviderError(
-          "AI 服务响应超时，请重新分析。",
-          "provider_timeout",
-          504,
+      } else {
+        providerError = new ProviderError(
+          "暂时无法连接 AI 服务，请检查网络后重试。",
+          "provider_unavailable",
+          502,
           true,
         );
       }
-      throw new ProviderError(
-        "暂时无法连接 AI 服务，请检查网络后重试。",
-        "provider_unavailable",
-        502,
-        true,
-      );
+      logGenerateTiming(input, startedAt, "failed", providerError.code);
+      throw providerError;
     } finally {
       clearTimeout(timeout);
       input.signal?.removeEventListener("abort", abortFromCaller);
@@ -256,6 +267,41 @@ export class DeepSeekClient {
       input.signal?.removeEventListener("abort", abortFromCaller);
     }
   }
+}
+
+function generateRequestOptions(profile?: GenerateProfile): {
+  thinking?: { type: "enabled" };
+  reasoning_effort?: "high";
+  max_tokens: number;
+} {
+  if (profile === "fast_json") return { max_tokens: 2_000 };
+  if (profile === "analysis_json") {
+    return {
+      thinking: { type: "enabled" },
+      reasoning_effort: "high",
+      max_tokens: 8_000,
+    };
+  }
+  return {
+    thinking: { type: "enabled" },
+    reasoning_effort: "high",
+    max_tokens: 12_000,
+  };
+}
+
+function logGenerateTiming(
+  input: GenerateInput,
+  startedAt: number,
+  status: "completed" | "failed",
+  code?: string,
+): void {
+  console.info("[sabc.ai.timing]", {
+    operation: input.operation ?? "generate",
+    profile: input.profile ?? "default",
+    durationMs: Date.now() - startedAt,
+    status,
+    ...(code ? { code } : {}),
+  });
 }
 
 type ProviderMessageContent =

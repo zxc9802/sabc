@@ -2,7 +2,10 @@ import "server-only";
 
 import { z } from "zod";
 
-import type { GenerateResult } from "@/lib/ai/deepseek-client";
+import type {
+  GenerateProfile,
+  GenerateResult,
+} from "@/lib/ai/deepseek-client";
 
 import { sanitizeResearchQueries } from "./query-sanitizer";
 
@@ -14,6 +17,8 @@ interface ResearchPlanningClient {
   generate(input: {
     systemPrompt: string;
     userPrompt: string;
+    profile?: GenerateProfile;
+    operation?: string;
     signal?: AbortSignal;
   }): Promise<GenerateResult>;
 }
@@ -36,7 +41,7 @@ export async function createResearchPlan(
   const systemPrompt = `你负责把项目访谈转换为公开网络调研语句。
 
 只返回严格 JSON：{"queries":["公开搜索语句"]}。
-生成 1 到 5 条独立、具体、可公开检索的语句，优先市场规模、需求、竞争、政策、成本和风险。
+生成 1 到 3 条独立、具体、可公开检索的语句，优先覆盖市场需求、竞争与政策成本风险。
 不得复制 API Key、密码、邮箱、电话、内部订单号、内部客户名或内部金额。
 不得输出完整访谈摘要、Markdown、解释或额外字段。`;
   const userPrompt = JSON.stringify({
@@ -55,12 +60,14 @@ export async function createResearchPlan(
         attempt === 0
           ? userPrompt
           : JSON.stringify({ conversation: userPrompt, invalidOutput: previous }),
+      profile: "fast_json",
+      operation: attempt === 0 ? "research_plan" : "research_plan_repair",
       signal: input.signal,
     });
     previous = response.text.slice(0, 2_000);
     try {
       const parsed = researchPlanSchema.parse(JSON.parse(response.text) as unknown);
-      const queries = sanitizeResearchQueries(parsed.queries);
+      const queries = sanitizeResearchQueries(parsed.queries).slice(0, 3);
       if (queries.length > 0) return { queries };
     } catch {
       // One repair attempt is allowed below.

@@ -122,6 +122,20 @@ it("classifies, scores, and selects one next question", async () => {
   expect(output.scored.totalScore).toBe(80);
   expect(output.nextQuestion?.id).toBe("q1");
   expect(client.generate).toHaveBeenCalledTimes(2);
+  expect(client.generate).toHaveBeenNthCalledWith(
+    1,
+    expect.objectContaining({
+      profile: "fast_json",
+      operation: "classification",
+    }),
+  );
+  expect(client.generate).toHaveBeenNthCalledWith(
+    2,
+    expect.objectContaining({
+      profile: "analysis_json",
+      operation: "analysis",
+    }),
+  );
 });
 
 it("marks required research unavailable without inventing a search call", async () => {
@@ -166,15 +180,27 @@ it("downgrades a confirmed veto without an explicit user-message reference", asy
   expect(output.scored.provisionalGrade).not.toBe("C");
 });
 
-it("retries one malformed analysis response", async () => {
+it("retries one malformed analysis response with concrete validation issues", async () => {
+  const malformed = analysisResponse();
+  malformed.dimensions[0].proposedScore = 9;
   const client = fakeClient([
     classification,
-    "not-json",
+    malformed,
     analysisResponse(),
   ]);
 
   await expect(analyzeProject(client, input())).resolves.toBeDefined();
   expect(client.generate).toHaveBeenCalledTimes(3);
+  const repairInput = client.generate.mock.calls[2][0];
+  expect(repairInput).toMatchObject({
+    profile: "analysis_json",
+    operation: "analysis_repair",
+  });
+  expect(JSON.parse(repairInput.userPrompt).validationIssues).toEqual(
+    expect.arrayContaining([
+      expect.stringContaining("dimensions.0.proposedScore"),
+    ]),
+  );
 });
 
 it("still selects a question after round twelve", async () => {

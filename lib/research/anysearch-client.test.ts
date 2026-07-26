@@ -78,6 +78,33 @@ it("returns a stable error after both attempts fail", async () => {
   expect(fetchImpl).toHaveBeenCalledTimes(2);
 });
 
+it("limits each default search attempt to ten seconds", async () => {
+  vi.useFakeTimers();
+  const fetchImpl = vi.fn(
+    (_url: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      }),
+  );
+  const client = new AnySearchClient({ fetchImpl: fetchImpl as typeof fetch });
+  const outcome = client.search("market").catch((error: unknown) => error);
+
+  try {
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(outcome).resolves.toMatchObject({ code: "anysearch_timeout" });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("rejects a response without a readable text result", async () => {
   const fetchImpl = vi.fn(async () =>
     Response.json({ jsonrpc: "2.0", id: 1, result: { content: [] } }),

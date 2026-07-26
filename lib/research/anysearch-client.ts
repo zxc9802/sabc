@@ -33,7 +33,7 @@ export class AnySearchClient {
     this.apiKey = options.apiKey ?? "";
     this.endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.timeoutMs = options.timeoutMs ?? 30_000;
+    this.timeoutMs = options.timeoutMs ?? 10_000;
   }
 
   async search(query: string, signal?: AbortSignal): Promise<ResearchSource[]> {
