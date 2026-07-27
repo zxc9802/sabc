@@ -1,6 +1,11 @@
 import "server-only";
 
 import type { ChatAttachment } from "@/lib/attachments/attachment-types";
+import {
+  MainAppBillingError,
+  parseOpenAiUsage,
+  reserveTextCredits,
+} from "@/lib/main-app-billing";
 
 export interface GenerateResult {
   text: string;
@@ -24,6 +29,8 @@ export interface DeepSeekClientOptions {
   model: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  billingEnabled?: boolean;
+  billingUserId?: string;
 }
 
 export class ProviderError extends Error {
@@ -44,6 +51,8 @@ export class DeepSeekClient {
   private readonly model: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly billingEnabled: boolean;
+  private readonly billingUserId?: string;
 
   constructor(options: DeepSeekClientOptions) {
     if (!options.endpoint || !options.apiKey || !options.model) {
@@ -60,6 +69,8 @@ export class DeepSeekClient {
     this.model = options.model;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 300_000;
+    this.billingEnabled = options.billingEnabled ?? false;
+    this.billingUserId = options.billingUserId;
   }
 
   async generate(input: GenerateInput): Promise<GenerateResult> {
@@ -74,6 +85,17 @@ export class DeepSeekClient {
       controller.abort();
     }, this.timeoutMs);
     const requestOptions = generateRequestOptions(input.profile);
+    const messages = buildMessages(input);
+    const estimatedInputTokens = estimateMessageTokens(messages);
+    const billing = this.billingEnabled
+      ? await reserveProviderCredits({
+          userId: this.billingUserId,
+          operation: input.operation,
+          model: this.model,
+          estimatedInputTokens,
+          maxOutputTokens: requestOptions.max_tokens,
+        })
+      : null;
 
     try {
       const response = await this.fetchImpl(this.endpoint, {
@@ -84,7 +106,7 @@ export class DeepSeekClient {
         },
         body: JSON.stringify({
           model: this.model,
-          messages: buildMessages(input),
+          messages,
           ...requestOptions,
           response_format: { type: "json_object" },
           temperature: 0.2,
@@ -104,6 +126,7 @@ export class DeepSeekClient {
 
       const payload = (await response.json()) as {
         choices?: Array<{ message?: { content?: unknown } }>;
+        usage?: unknown;
       };
       const content = payload.choices?.[0]?.message?.content;
 
@@ -116,12 +139,26 @@ export class DeepSeekClient {
         );
       }
 
+      await billing?.settle(parseOpenAiUsage(payload, {
+        inputTokens: estimatedInputTokens,
+        outputText: content,
+      }));
       logGenerateTiming(input, startedAt, "completed");
       return { text: content.trim(), researchAvailable: false };
     } catch (error) {
       let providerError: ProviderError;
+      if (!(error instanceof MainAppBillingError)) {
+        await billing?.release().catch(() => undefined);
+      }
       if (error instanceof ProviderError) {
         providerError = error;
+      } else if (error instanceof MainAppBillingError) {
+        providerError = new ProviderError(
+          error.message,
+          error.code || "credit_billing",
+          error.status,
+          error.status >= 500,
+        );
       } else if (error instanceof DOMException && error.name === "AbortError") {
         if (input.signal?.aborted && !timedOut) {
           providerError = new ProviderError(
@@ -164,6 +201,19 @@ export class DeepSeekClient {
       timedOut = true;
       controller.abort();
     }, this.timeoutMs);
+    const messages = buildMessages(input);
+    const estimatedInputTokens = estimateMessageTokens(messages);
+    const billing = this.billingEnabled
+      ? await reserveProviderCredits({
+          userId: this.billingUserId,
+          operation: input.operation,
+          model: this.model,
+          estimatedInputTokens,
+          maxOutputTokens: 4_000,
+        })
+      : null;
+    let outputText = "";
+    let preserveReservation = false;
 
     try {
       const response = await this.fetchImpl(this.endpoint, {
@@ -174,7 +224,7 @@ export class DeepSeekClient {
         },
         body: JSON.stringify({
           model: this.model,
-          messages: buildMessages(input),
+          messages,
           thinking: { type: "enabled" },
           reasoning_effort: "high",
           temperature: 0.2,
@@ -210,12 +260,17 @@ export class DeepSeekClient {
           const data = line.slice(5).trim();
           if (data === "[DONE]") {
             if (!emitted) throw emptyStreamError();
+            await billing?.settle(parseOpenAiUsage({}, {
+              inputTokens: estimatedInputTokens,
+              outputText,
+            }));
             return;
           }
           if (!data) continue;
 
           let payload: {
             choices?: Array<{ delta?: { content?: unknown } }>;
+            usage?: unknown;
           };
           try {
             payload = JSON.parse(data) as typeof payload;
@@ -230,7 +285,14 @@ export class DeepSeekClient {
           const content = payload.choices?.[0]?.delta?.content;
           if (typeof content === "string" && content.length > 0) {
             emitted = true;
+            outputText += content;
             yield content;
+          }
+          if (payload.usage) {
+            await billing?.settle(parseOpenAiUsage(payload, {
+              inputTokens: estimatedInputTokens,
+              outputText,
+            }));
           }
         }
 
@@ -239,8 +301,28 @@ export class DeepSeekClient {
 
       throw emptyStreamError();
     } catch (error) {
-      if (error instanceof ProviderError) throw error;
-      if (error instanceof DOMException && error.name === "AbortError") {
+      let handledError = error;
+      if (!(handledError instanceof MainAppBillingError) && outputText && billing) {
+        try {
+          await billing.settle(parseOpenAiUsage({}, {
+            inputTokens: estimatedInputTokens,
+            outputText,
+          }));
+        } catch (settlementError) {
+          handledError = settlementError;
+        }
+      }
+      if (handledError instanceof ProviderError) throw handledError;
+      if (handledError instanceof MainAppBillingError) {
+        preserveReservation = true;
+        throw new ProviderError(
+          handledError.message,
+          handledError.code || "credit_billing",
+          handledError.status,
+          handledError.status >= 500,
+        );
+      }
+      if (handledError instanceof DOMException && handledError.name === "AbortError") {
         if (input.signal?.aborted && !timedOut) {
           throw new ProviderError(
             "已停止生成。",
@@ -263,6 +345,19 @@ export class DeepSeekClient {
         true,
       );
     } finally {
+      if (!preserveReservation && outputText && billing) {
+        try {
+          await billing.settle(parseOpenAiUsage({}, {
+            inputTokens: estimatedInputTokens,
+            outputText,
+          }));
+        } catch (error) {
+          preserveReservation = error instanceof MainAppBillingError;
+        }
+      }
+      if (!preserveReservation) {
+        await billing?.release().catch(() => undefined);
+      }
       clearTimeout(timeout);
       input.signal?.removeEventListener("abort", abortFromCaller);
     }
@@ -354,11 +449,59 @@ function buildUserContent(input: GenerateInput): ProviderMessageContent {
   ];
 }
 
-export function createDeepSeekClientFromEnv(): DeepSeekClient {
+function normalizeOperation(value: string | undefined): string {
+  const normalized = (value || "generate")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || "generate";
+}
+
+function estimateMessageTokens(messages: ReturnType<typeof buildMessages>): number {
+  const serialized = JSON.stringify(messages, (_key, value) => (
+    typeof value === "string" && value.startsWith("data:")
+      ? `[attachment:${value.length}]`
+      : value
+  ));
+  return Math.min(200_000, new TextEncoder().encode(serialized).length);
+}
+
+async function reserveProviderCredits(input: {
+  userId?: string;
+  operation?: string;
+  model: string;
+  estimatedInputTokens: number;
+  maxOutputTokens: number;
+}) {
+  try {
+    return await reserveTextCredits({
+      userId: input.userId,
+      operation: normalizeOperation(input.operation),
+      model: input.model,
+      estimatedInputTokens: input.estimatedInputTokens,
+      maxOutputTokens: input.maxOutputTokens,
+    });
+  } catch (error) {
+    if (error instanceof MainAppBillingError) {
+      throw new ProviderError(
+        error.message,
+        error.code || "credit_billing",
+        error.status,
+        error.status >= 500,
+      );
+    }
+    throw error;
+  }
+}
+
+export function createDeepSeekClientFromEnv(billingUserId?: string): DeepSeekClient {
   return new DeepSeekClient({
     endpoint: process.env.DEEPSEEK_API_ENDPOINT ?? "",
     apiKey: process.env.DEEPSEEK_API_KEY ?? "",
     model: process.env.DEEPSEEK_MODEL ?? "",
+    billingEnabled: true,
+    billingUserId,
   });
 }
 

@@ -8,6 +8,7 @@ import {
   ProviderError,
 } from "@/lib/ai/deepseek-client";
 import { chatAttachmentsSchema } from "@/lib/attachments/attachment-schema";
+import { currentBillingUserId } from "@/lib/main-app-billing";
 import {
   buildAdvisorData,
   buildAdvisorSystemPrompt,
@@ -126,7 +127,7 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const client = createDeepSeekClientFromEnv();
+  const client = createDeepSeekClientFromEnv(await currentBillingUserId());
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       void streamAdvisor(controller, client, parsed.data, request.signal);

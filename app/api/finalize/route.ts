@@ -31,6 +31,7 @@ import {
   type FinalizeStage,
   type FinalizeStreamEvent,
 } from "@/lib/streaming/finalize-stream";
+import { currentBillingUserId } from "@/lib/main-app-billing";
 
 const httpUrlSchema = z.string().url().refine((value) => {
   const protocol = new URL(value).protocol;
@@ -119,7 +120,7 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const modelClient = createDeepSeekClientFromEnv();
+  const modelClient = createDeepSeekClientFromEnv(await currentBillingUserId());
   const anySearchClient = createAnySearchClientFromEnv();
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {

@@ -18,6 +18,7 @@ import {
   type FinalReportStage,
   type FinalReportStreamEvent,
 } from "@/lib/report/final-report-stream";
+import { currentBillingUserId } from "@/lib/main-app-billing";
 
 const dimensionKeySchema = z.enum([
   "strategic_value",
@@ -122,12 +123,13 @@ export async function POST(request: Request): Promise<Response> {
       false,
     );
   }
+  const billingUserId = await currentBillingUserId();
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       void streamReport(
         controller,
-        createDeepSeekClientFromEnv(),
+        createDeepSeekClientFromEnv(billingUserId),
         parsed.data,
         request.signal,
       );
