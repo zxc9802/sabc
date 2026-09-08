@@ -104,7 +104,7 @@ export function getMainAppUrl(): string {
 }
 
 export function getPublicSabcAppUrl(): string {
-  return PUBLIC_SABC_APP_URL;
+  return (process.env.PUBLIC_APP_URL?.trim() || PUBLIC_SABC_APP_URL).replace(/\/+$/, '');
 }
 
 export function getMainAppSsoLaunchUrl(): string {
