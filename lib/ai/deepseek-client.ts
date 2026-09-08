@@ -1,3 +1,5 @@
+import { meteredFetch, isUsageReportingEnabled } from "@/lib/main-usage";
+import { currentBillingUserId } from "@/lib/main-app-billing";
 import "server-only";
 
 import type { ChatAttachment } from "@/lib/attachments/attachment-types";
@@ -67,7 +69,7 @@ export class DeepSeekClient {
     this.endpoint = options.endpoint;
     this.apiKey = options.apiKey;
     this.model = options.model;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl ?? (async (url, init) => meteredFetch(url, init, this.billingUserId || (isUsageReportingEnabled() ? await currentBillingUserId() : undefined)));
     this.timeoutMs = options.timeoutMs ?? 300_000;
     this.billingEnabled = options.billingEnabled ?? false;
     this.billingUserId = options.billingUserId;
