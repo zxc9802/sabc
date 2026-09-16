@@ -76,3 +76,22 @@ npm.cmd run smoke:ai
 7. 只有已经生成最终报告的项目才进入横向对比。
 
 网络、模型拒绝、超时、结构校验、本地存储和报告保存会显示不同的中文错误。网络重试只重放最后一次分析请求，不重复用户消息；本地保存失败只重试 IndexedDB 写入，不会再次调用模型。
+
+
+## OpenLux usage reporting
+
+Deploy the updated main application's `/api/sso/usage` and legacy billing `usageReportedSeparately` support before deploying this tool. Reserve/settle/release business charges and existing billing estimates are preserved; the flag suppresses only duplicate legacy usage records.
+
+Server-only environment:
+- `USAGE_MONITOR_INTERNAL_SECRET`: this tool's own main-site usage secret, registered under tool key `sabc`.
+- `MAIN_APP_URL`: existing main application origin, default `https://www.qycm.top`.
+- `USAGE_MONITOR_URL`: optional full canonical usage endpoint override.
+- `USAGE_MONITOR_OUTBOX_DIR`: persistent writable directory, default `.data/usage-outbox/sabc`. Mount persistent storage on every server/worker; ephemeral/serverless filesystems are not durable. Never use model keys or another tool's secret for usage reporting.
+
+Only actual upstream hostname `api.openlux.ai` qualifies. Each actual HTTP attempt receives its own UUID, reused when retrying delivery. The report includes only metadata, server-verified SSO employee ID and upstream usage counts, including cache, image input and reasoning details. Missing values stay null; explicit zero stays zero. No prompts, response text, files, image URLs, keys, local cost calculations or byte-length token estimates are sent to the canonical endpoint.
+
+Pending metadata is persisted before the model call; completed/failed/interrupted events are persisted before delivery. An HTTP 202 or pending upstream status stays pending. Each later call drains up to ten events within three seconds; delivery failures retain metadata. Explicit retry: `node --experimental-strip-types scripts/retry-usage.mjs` using the same environment and persistent mount, repeated for large backlogs. The command attempts delivery; check retained outbox files for backlog. No automatic background retry is claimed. Failed persistent-storage initialization leaves legacy usage enabled. Server/storage failures after a model call can leave only pending metadata and must be investigated from operational logs.
+
+Text generation and streaming use the server-captured billing employee. OpenLux streams request usage frames and report completion only on `[DONE]`; cancellation/truncation reports interrupted with counts received so far. Non-OpenLux requests keep their existing stream protocol.
+
+Tests: `node --test tests/openlux-usage.test.mjs`; `npx vitest run lib/ai/openlux-reporting.test.ts lib/ai/deepseek-client.test.ts lib/main-app-billing.test.ts`.
