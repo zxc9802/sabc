@@ -36,4 +36,16 @@ it('reports final stream usage once and records consumer cancellation as interru
  const other=new DeepSeekClient({endpoint:'https://yunwu.ai/v1/chat/completions',apiKey:'private',model:'openlux-label',billingUserId:'employee',billingEnabled:true,fetchImpl:async()=>Response.json({choices:[{message:{content:'{}'}}]})});
  await other.generate({systemPrompt:'private',userPrompt:'private'});
  expect(reports).toHaveLength(0);expect(bills.every(bill=>!bill.usageReportedSeparately&&bill.providerId==='yunwu.ai')).toBe(true);
+ for (const errorFrame of [{error:{message:'private error'}},{type:'error'},{type:'response.failed',response:{status:'failed'}}]) {
+  reports.length=0;
+  frames.splice(0,frames.length,
+   'data: '+JSON.stringify({choices:[{delta:{content:'partial'}}],usage:{prompt_tokens:4,completion_tokens:1}}),
+   'data: '+JSON.stringify(errorFrame),
+   'data: [DONE]',
+  );
+  for await (const chunk of client.stream({systemPrompt:'private',userPrompt:'private'})) expect(chunk).toBe('partial');
+  expect(reports.filter(report=>report.status!=='pending')).toHaveLength(1);
+  expect(reports.at(-1)).toMatchObject({status:'failed',inputTokens:4,outputTokens:1});
+ }
+
 });
