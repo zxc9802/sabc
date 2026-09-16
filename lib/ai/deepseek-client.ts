@@ -294,6 +294,9 @@ export class DeepSeekClient {
           let payload: {
             choices?: Array<{ delta?: { content?: unknown } }>;
             usage?: unknown;
+            error?: unknown;
+            type?: string;
+            response?: { status?: string; usage?: unknown };
           };
           try {
             payload = JSON.parse(data) as typeof payload;
@@ -305,7 +308,10 @@ export class DeepSeekClient {
               true,
             );
           }
-          if (payload.usage) usagePayload = payload;
+          if (payload.usage || payload.response?.usage) usagePayload = payload;
+          if (payload.error || payload.type === "error" || payload.type === "response.failed" || payload.response?.status === "failed") {
+            await usageCall?.finish("failed", usagePayload, upstreamRequestId);
+          }
           const content = payload.choices?.[0]?.delta?.content;
           if (typeof content === "string" && content.length > 0) {
             emitted = true;
