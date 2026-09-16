@@ -74,8 +74,6 @@ async function postBilling(userId: string, body: Record<string, unknown>) {
 }
 
 export async function reserveTextCredits(input: {
-  providerId: string;
-  usageReportedSeparately?: boolean;
   userId?: string;
   operation: string;
   model: string;
@@ -94,8 +92,7 @@ export async function reserveTextCredits(input: {
     requestId,
     operation: input.operation,
     model: input.model,
-    providerId: input.providerId,
-    ...(input.usageReportedSeparately ? { usageReportedSeparately: true } : {}),
+    providerId: "yunwu",
   };
   await postBilling(userId, {
     action: "reserve",

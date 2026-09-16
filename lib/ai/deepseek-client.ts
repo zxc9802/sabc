@@ -1,11 +1,8 @@
 import "server-only";
-import { usageReporter } from "@/lib/usage-monitor";
-import { providerHostname, responseStatus } from "@/lib/openlux-usage";
 
 import type { ChatAttachment } from "@/lib/attachments/attachment-types";
 import {
   MainAppBillingError,
-  currentBillingUserId,
   parseOpenAiUsage,
   reserveTextCredits,
 } from "@/lib/main-app-billing";
@@ -90,22 +87,16 @@ export class DeepSeekClient {
     const requestOptions = generateRequestOptions(input.profile);
     const messages = buildMessages(input);
     const estimatedInputTokens = estimateMessageTokens(messages);
-    const reportingUserId = this.billingUserId || (this.billingEnabled && usageReporter.enabled(this.endpoint) ? await currentBillingUserId() : undefined);
-    const reportingEnabled = Boolean(reportingUserId) && await usageReporter.ready(this.endpoint);
     const billing = this.billingEnabled
       ? await reserveProviderCredits({
           userId: this.billingUserId,
-          providerId: providerHostname(this.endpoint),
-          usageReportedSeparately: reportingEnabled,
           operation: input.operation,
           model: this.model,
           estimatedInputTokens,
           maxOutputTokens: requestOptions.max_tokens,
         })
       : null;
-    const usageCall = reportingEnabled ? await usageReporter.begin({ url: this.endpoint, model: this.model, userId: reportingUserId }) : null;
 
-    let upstreamPending = false;
     try {
       const response = await this.fetchImpl(this.endpoint, {
         method: "POST",
@@ -137,8 +128,6 @@ export class DeepSeekClient {
         choices?: Array<{ message?: { content?: unknown } }>;
         usage?: unknown;
       };
-      upstreamPending = responseStatus(response.status, payload) === "pending";
-      await usageCall?.finish(responseStatus(response.status, payload), payload, response.headers.get("x-request-id"));
       const content = payload.choices?.[0]?.message?.content;
 
       if (typeof content !== "string" || content.trim() === "") {
@@ -157,7 +146,6 @@ export class DeepSeekClient {
       logGenerateTiming(input, startedAt, "completed");
       return { text: content.trim(), researchAvailable: false };
     } catch (error) {
-      if (!upstreamPending) await usageCall?.finish("failed");
       let providerError: ProviderError;
       if (!(error instanceof MainAppBillingError)) {
         await billing?.release().catch(() => undefined);
@@ -215,23 +203,16 @@ export class DeepSeekClient {
     }, this.timeoutMs);
     const messages = buildMessages(input);
     const estimatedInputTokens = estimateMessageTokens(messages);
-    const reportingUserId = this.billingUserId || (this.billingEnabled && usageReporter.enabled(this.endpoint) ? await currentBillingUserId() : undefined);
-    const reportingEnabled = Boolean(reportingUserId) && await usageReporter.ready(this.endpoint);
     const billing = this.billingEnabled
       ? await reserveProviderCredits({
           userId: this.billingUserId,
-          providerId: providerHostname(this.endpoint),
-          usageReportedSeparately: reportingEnabled,
           operation: input.operation,
           model: this.model,
           estimatedInputTokens,
           maxOutputTokens: 4_000,
         })
       : null;
-    const usageCall = reportingEnabled ? await usageReporter.begin({ url: this.endpoint, model: this.model, userId: reportingUserId }) : null;
     let outputText = "";
-    let usagePayload: unknown;
-    let upstreamRequestId: string | null = null;
     let preserveReservation = false;
 
     try {
@@ -249,7 +230,6 @@ export class DeepSeekClient {
           temperature: 0.2,
           max_tokens: 4_000,
           stream: true,
-          ...(reportingEnabled ? { stream_options: { include_usage: true } } : {}),
         }),
         signal: controller.signal,
       });
@@ -262,7 +242,6 @@ export class DeepSeekClient {
           response.status === 429 || response.status >= 500,
         );
       }
-      upstreamRequestId = response.headers.get("x-request-id");
       if (!response.body) throw emptyStreamError();
 
       const reader = response.body.getReader();
@@ -275,14 +254,12 @@ export class DeepSeekClient {
         buffer += decoder.decode(value, { stream: !done });
         const lines = buffer.split(/\r?\n/u);
         buffer = lines.pop() ?? "";
-        if (done && buffer) { lines.push(buffer); buffer = ""; }
 
         for (const line of lines) {
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trim();
           if (data === "[DONE]") {
             if (!emitted) throw emptyStreamError();
-            await usageCall?.finish("completed", usagePayload, upstreamRequestId);
             await billing?.settle(parseOpenAiUsage({}, {
               inputTokens: estimatedInputTokens,
               outputText,
@@ -294,9 +271,6 @@ export class DeepSeekClient {
           let payload: {
             choices?: Array<{ delta?: { content?: unknown } }>;
             usage?: unknown;
-            error?: unknown;
-            type?: string;
-            response?: { status?: string; usage?: unknown };
           };
           try {
             payload = JSON.parse(data) as typeof payload;
@@ -307,10 +281,6 @@ export class DeepSeekClient {
               502,
               true,
             );
-          }
-          if (payload.usage || payload.response?.usage) usagePayload = payload;
-          if (payload.error || payload.type === "error" || payload.type === "response.failed" || payload.response?.status === "failed") {
-            await usageCall?.finish("failed", usagePayload, upstreamRequestId);
           }
           const content = payload.choices?.[0]?.delta?.content;
           if (typeof content === "string" && content.length > 0) {
@@ -331,7 +301,6 @@ export class DeepSeekClient {
 
       throw emptyStreamError();
     } catch (error) {
-      await usageCall?.finish(outputText || input.signal?.aborted ? "interrupted" : "failed", usagePayload, upstreamRequestId);
       let handledError = error;
       if (!(handledError instanceof MainAppBillingError) && outputText && billing) {
         try {
@@ -376,7 +345,6 @@ export class DeepSeekClient {
         true,
       );
     } finally {
-      await usageCall?.finish("interrupted", usagePayload, upstreamRequestId);
       if (!preserveReservation && outputText && billing) {
         try {
           await billing.settle(parseOpenAiUsage({}, {
@@ -500,8 +468,6 @@ function estimateMessageTokens(messages: ReturnType<typeof buildMessages>): numb
 }
 
 async function reserveProviderCredits(input: {
-  providerId: string;
-  usageReportedSeparately?: boolean;
   userId?: string;
   operation?: string;
   model: string;
@@ -511,8 +477,6 @@ async function reserveProviderCredits(input: {
   try {
     return await reserveTextCredits({
       userId: input.userId,
-      providerId: input.providerId,
-      usageReportedSeparately: input.usageReportedSeparately,
       operation: normalizeOperation(input.operation),
       model: input.model,
       estimatedInputTokens: input.estimatedInputTokens,
