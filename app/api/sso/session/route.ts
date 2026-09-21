@@ -4,13 +4,18 @@ import {
   getMainAppSessionCookieOptions,
   readMainAppSessionCookie,
   validateMainAppSession,
+  mainAppSessionUnavailableResponse,
 } from '@/lib/main-app-sso';
 
 export async function GET(request: NextRequest) {
   const session = await readMainAppSessionCookie(
     request.cookies.get(getMainAppSessionCookieName())?.value,
   );
-  if (session && (await validateMainAppSession(session))) {
+  const validation = session ? await validateMainAppSession(session) : 'invalid';
+  if (validation === 'unavailable') {
+    return mainAppSessionUnavailableResponse(true);
+  }
+  if (session && validation === 'valid') {
     return Response.json({ success: true, data: { user: session.user } });
   }
 

@@ -103,8 +103,8 @@ describe('main application SSO regression', () => {
     };
 
     try {
-      await expect(sso.validateMainAppSession(session)).resolves.toBe(true);
-      await expect(sso.validateMainAppSession(session)).resolves.toBe(true);
+      await expect(sso.validateMainAppSession(session)).resolves.toBe('valid');
+      await expect(sso.validateMainAppSession(session)).resolves.toBe('valid');
       expect(fetchImpl).toHaveBeenCalledOnce();
     } finally {
       globalThis.fetch = originalFetch;

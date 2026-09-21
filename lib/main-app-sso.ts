@@ -221,19 +221,32 @@ export async function exchangeMainAppSsoTicket(
   };
 }
 
+export type MainAppSessionValidation = 'valid' | 'invalid' | 'unavailable';
+
+export function mainAppSessionUnavailableResponse(isApi: boolean): Response {
+  const message = '暂时无法验证主站登录，登录凭证已保留，请稍后刷新重试。';
+  const init = { status: 503, headers: { 'Cache-Control': 'no-store', 'Retry-After': '5' } };
+  return isApi
+    ? Response.json({ error: message, code: 'SSO_VALIDATION_UNAVAILABLE' }, init)
+    : new Response(message, { ...init, headers: { ...init.headers, 'Content-Type': 'text/plain; charset=utf-8' } });
+}
+
 export async function validateMainAppSession(
   session: MainAppSession,
-): Promise<boolean> {
+): Promise<MainAppSessionValidation> {
   const now = Date.now();
+  if (session.expiresAt <= now) return 'invalid';
   const cacheKey = await sessionValidationCacheKey(session.token);
   for (const [key, expiresAt] of sessionValidationCache) {
     if (expiresAt <= now) sessionValidationCache.delete(key);
   }
-  if ((sessionValidationCache.get(cacheKey) ?? 0) > now) return true;
+  if ((sessionValidationCache.get(cacheKey) ?? 0) > now) return 'valid';
 
   try {
     const response = await fetch(`${getMainAppUrl()}/api/sso/session`, {
       cache: 'no-store',
+      signal: AbortSignal.timeout(10_000),
+      redirect: 'error',
       headers: { Authorization: `Bearer ${session.token}` },
     });
     if (response.ok) {
@@ -242,9 +255,9 @@ export async function validateMainAppSession(
         Math.min(session.expiresAt, Date.now() + SESSION_VALIDATION_CACHE_MS),
       );
     }
-    return response.ok;
+    return response.ok ? 'valid' : response.status === 401 || response.status === 403 ? 'invalid' : 'unavailable';
   } catch {
-    return false;
+    return 'unavailable';
   }
 }
 

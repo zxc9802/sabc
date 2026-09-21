@@ -5,6 +5,7 @@ import {
   getMainAppSsoLaunchUrl,
   readMainAppSessionCookie,
   validateMainAppSession,
+  mainAppSessionUnavailableResponse,
 } from './lib/main-app-sso';
 
 export async function proxy(request: NextRequest) {
@@ -15,7 +16,11 @@ export async function proxy(request: NextRequest) {
   const session = await readMainAppSessionCookie(
     request.cookies.get(getMainAppSessionCookieName())?.value,
   );
-  if (session && (await validateMainAppSession(session))) {
+  const validation = session ? await validateMainAppSession(session) : 'invalid';
+  if (validation === 'unavailable') {
+    return mainAppSessionUnavailableResponse(request.nextUrl.pathname.startsWith('/api/'));
+  }
+  if (session && validation === 'valid') {
     return NextResponse.next();
   }
 
